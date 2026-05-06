@@ -50,6 +50,10 @@ class BIRequirementsAnalyst(RoleZero):
         # _watch([UserRequirement]) call in Role.__init__, so we call it explicitly here.
         self._watch([UserRequirement])
 
+    async def _quick_think(self):
+        # Elicitation is always a multi-turn structured task — never shortcut via QUICK/AMBIGUOUS.
+        return None, "TASK"
+
     def _update_tool_execution(self):
         inspector = DataSourceInspector()
         self.tool_execution_map.update({
