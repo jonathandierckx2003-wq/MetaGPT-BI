@@ -14,7 +14,7 @@ from metagpt.utils.common import any_to_name, any_to_str
 
 # Import to ensure DataSourceInspector is registered in TOOL_REGISTRY before the
 # BM25ToolRecommender validates the tools list on instantiation.
-import metagpt.tools.bi.data_source_inspector  # noqa: F401
+from metagpt.tools.bi.data_source_inspector import DataSourceInspector
 
 
 @register_tool(include_functions=["generate_brd"])
@@ -51,8 +51,13 @@ class BIRequirementsAnalyst(RoleZero):
         self._watch([UserRequirement])
 
     def _update_tool_execution(self):
+        inspector = DataSourceInspector()
         self.tool_execution_map.update({
             "BIRequirementsAnalyst.generate_brd": self.generate_brd,
+            "DataSourceInspector.inspect_csv": inspector.inspect_csv,
+            "DataSourceInspector.inspect_excel": inspector.inspect_excel,
+            "DataSourceInspector.inspect_duckdb": inspector.inspect_duckdb,
+            "DataSourceInspector.inspect_postgres": inspector.inspect_postgres,
         })
 
     async def ask_human(self, question: str) -> str:

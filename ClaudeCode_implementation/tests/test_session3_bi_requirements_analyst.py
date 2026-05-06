@@ -81,6 +81,15 @@ class TestBIRequirementsAnalystInstantiation(unittest.TestCase):
     def test_generate_brd_in_tool_execution_map(self):
         self.assertIn("BIRequirementsAnalyst.generate_brd", self.agent.tool_execution_map)
 
+    def test_data_source_inspector_in_tool_execution_map(self):
+        for key in [
+            "DataSourceInspector.inspect_csv",
+            "DataSourceInspector.inspect_excel",
+            "DataSourceInspector.inspect_duckdb",
+            "DataSourceInspector.inspect_postgres",
+        ]:
+            self.assertIn(key, self.agent.tool_execution_map, f"{key} missing from tool_execution_map")
+
     def test_instruction_contains_extra_instruction(self):
         # The instruction should contain both ROLE_INSTRUCTION and EXTRA_INSTRUCTION content.
         self.assertIn("Phase 1", self.agent.instruction)
