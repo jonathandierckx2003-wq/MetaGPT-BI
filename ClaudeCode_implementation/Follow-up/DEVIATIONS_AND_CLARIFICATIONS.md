@@ -114,7 +114,7 @@ The EXTRA_INSTRUCTION in `metagpt/prompts/bi/bi_analytics_engineer.py` follows t
 | DATA_INGESTION | `Call the appropriate ingestion tool with the parameters in tool_args.` | `Call execute_BI_task(task) with the task object. The method will dispatch to the appropriate ingestion tool.` |
 | TRANSFORMATION | `call the transformation tool to compile and execute the generated model` | `call execute_BI_task(task) to compile and run the model and its tests` |
 
-The CREDENTIAL_REQUEST and Execution Report instructions are also tightened: CREDENTIAL_REQUEST now says "Do not call execute_BI_task. Instead, call RoleZero.reply_to_human..." (clarifying the exception), and the Execution Report step specifies `docs/execution_report.md` as the explicit save path.
+The CREDENTIAL_REQUEST and Execution Report instructions are also tightened: CREDENTIAL_REQUEST now says "Do not call execute_BI_task. Instead, call RoleZero.ask_human..." (clarifying the exception; further corrected from `reply_to_human` to `ask_human` in DEV-19), and the Execution Report step specifies `docs/execution_report.md` as the explicit save path.
 
 **Why:**  
 The thesis explicitly designs execute_BI_task as the single dispatch entry point. Having the LLM call individual tools directly would bypass the routing logic, make the role harder to extend with new tools, and contradict the thesis's stated architectural intent. Prompting the LLM to call execute_BI_task is the only way to make the described architecture work correctly.
@@ -339,6 +339,70 @@ Added `import metagpt.tools.bi.data_source_inspector  # noqa: F401` at the top o
 The same pattern will apply to all other BI tool classes used by the other agents — each role class imports its tool classes to guarantee registration. This is a common Python pattern for plugin/registry architectures.
 
 **File changed:** `metagpt/roles/bi/bi_requirements_analyst.py`
+
+---
+
+### DEV-18 — WriteDataModel.run() returns a parsed dict (not a raw string); PROMPT_TEMPLATE uses XML delimiters
+
+**Theoretical design / original implementation:**  
+`WriteDataModel.run(brd_content)` called `self._aask(prompt)` and returned the raw LLM response string. The PROMPT_TEMPLATE instructed the LLM to "Use the Editor tool to write and save the three deliverables as separate files."
+
+**Problem discovered during Session 3 cross-session audit:**  
+`Action._aask()` makes a single LLM call and returns the text content of the response. The LLM cannot execute tool calls (like Editor) from inside that call — there is no ReAct loop inside `_aask()`. The instruction to "use the Editor tool" inside the PROMPT_TEMPLATE was therefore unreachable: the LLM would produce the file contents inline in its text response but nothing would be saved.
+
+Furthermore, `generate_data_model()` (the `@register_tool` method on `BIDataModeler` that wraps this action) needs to save three separate files to three separate paths. A single raw string return value cannot carry three distinct artifacts reliably.
+
+**Implementation:**  
+Two changes to `metagpt/actions/bi/write_data_model.py`:
+
+1. **PROMPT_TEMPLATE** — replaced the "Use the Editor tool" instruction with a structured output format block that instructs the LLM to wrap each artifact in XML-style tags:
+   ```
+   <dimensional_model_specification>...</dimensional_model_specification>
+   <conceptual_schema>...</conceptual_schema>
+   <logical_schema>...</logical_schema>
+   ```
+
+2. **`run()` return type** — changed from `str` to `dict`. After calling `_aask()`, `run()` applies a regex (`_TAG_PATTERN`) to extract the three tagged sections and returns:
+   ```python
+   {
+       "dimensional_model_specification": "...",
+       "conceptual_schema": "...",
+       "logical_schema": "...",
+   }
+   ```
+   A fallback (raw text under `dimensional_model_specification`, empty strings for the other two keys) is included for cases where the LLM does not produce the expected tags, so `generate_data_model()` can log and handle the failure gracefully rather than crashing on a `KeyError`.
+
+**Why:**  
+The `generate_data_model()` method on `BIDataModeler` is responsible for saving the three artifacts to their respective paths via `self.editor.write()`. It needs the content of each artifact separately. Structured XML tags are the standard MetaGPT pattern for extracting multiple structured outputs from a single LLM call (cf. `extract_content` utilities elsewhere in the codebase).
+
+**Files changed:** `metagpt/actions/bi/write_data_model.py`
+
+---
+
+### DEV-19 — CREDENTIAL_REQUEST in bi_analytics_engineer.py: `reply_to_human` → `ask_human`
+
+**Theoretical design / original implementation (DEV-05):**  
+The CREDENTIAL_REQUEST task type in `metagpt/prompts/bi/bi_analytics_engineer.py` said:
+> "Do not call execute_BI_task. Instead, call RoleZero.reply_to_human with a clearly worded message specifying exactly which credential is needed and for which system. Wait for the human response."
+
+**Problem discovered during Session 3 cross-session audit:**  
+`reply_to_human` is a one-way broadcast — it sends content to the human but does NOT block and wait for a response. `ask_human` is the correct method: it sends a message and blocks (via `run_in_executor` in the terminal PoC, via the MGXEnv mechanism in production) until the human replies.
+
+If the prompt says `reply_to_human`, the LLM will call it, immediately proceed to the next step, and the "Wait for the human response" instruction will be ignored because there is no mechanism to actually receive that response. The credential will never be stored.
+
+**Implementation:**  
+Changed step 1 of CREDENTIAL_REQUEST from:
+> "call RoleZero.reply_to_human with a clearly worded message..."
+
+to:
+> "call RoleZero.ask_human with a clearly worded message..."
+
+Also removed the now-redundant "Wait for the human response." sentence (step 2 previously), since `ask_human` blocks by design — the wait is implicit.
+
+**Why:**  
+`ask_human` is the only RoleZero method that returns the human's input to the caller. `reply_to_human` has no return path for human input. Using the wrong method here would cause every CREDENTIAL_REQUEST task to silently fail to collect the credential, causing all downstream tasks that depend on it to fail.
+
+**Files changed:** `metagpt/prompts/bi/bi_analytics_engineer.py`
 
 ---
 

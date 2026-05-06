@@ -27,8 +27,8 @@ For CONNECTION_SETUP tasks:
 4. Mark complete.
 
 For CREDENTIAL_REQUEST tasks:
-1. Do not call execute_BI_task. Instead, call RoleZero.reply_to_human with a clearly worded message specifying exactly which credential is needed and for which system.
-2. Wait for the human response. Store the received credential in your working memory for use in subsequent tasks that depend on it.
+1. Do not call execute_BI_task. Instead, call RoleZero.ask_human with a clearly worded message specifying exactly which credential is needed and for which system.
+2. Store the received credential in your working memory for use in subsequent tasks that depend on it.
 3. Mark complete only after the credential has been received and stored.
 
 For SCHEMA_CREATION tasks:
