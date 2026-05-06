@@ -34,15 +34,21 @@ class DataSourceInspector:
         df = pd.read_csv(file_path, nrows=5)
         full_df = pd.read_csv(file_path)
 
-        columns = [
-            {
+        columns = []
+        for col in full_df.columns:
+            null_count = int(full_df[col].isna().sum())
+            if null_count == len(full_df):
+                continue  # skip entirely-null columns — no useful schema info
+            samples = []
+            for v in df[col].tolist():
+                s = str(v)
+                samples.append(s[:60] + "…" if len(s) > 60 else s)
+            columns.append({
                 "name": col,
                 "dtype": str(full_df[col].dtype),
-                "sample": str(df[col].tolist()),
-                "null_count": int(full_df[col].isna().sum()),
-            }
-            for col in full_df.columns
-        ]
+                "sample": samples,
+                "null_count": null_count,
+            })
         return {
             "file": str(path.resolve()),
             "format": "csv",
