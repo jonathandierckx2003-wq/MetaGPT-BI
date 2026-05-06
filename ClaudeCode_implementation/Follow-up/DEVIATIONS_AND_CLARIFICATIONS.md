@@ -406,6 +406,27 @@ Also removed the now-redundant "Wait for the human response." sentence (step 2 p
 
 ---
 
+### DEV-20 — `Team(use_mgx=False)` required for BI PoC; MGXEnv crashes without a TeamLeader role
+
+**Prior assumption:**  
+Architectural note #3 stated "Team() uses MGXEnv by default — no special setup needed."
+
+**Problem discovered during live test (Session 3):**  
+`MGXEnv.publish_message` calls `self.get_role(TEAMLEADER_NAME)` (TEAMLEADER_NAME = "Mike") on every message. If no TeamLeader role has been hired, the call returns `None`, and the subsequent `tl.profile` access raises:
+```
+AttributeError: 'NoneType' object has no attribute 'profile'
+```
+The BI team has five domain agents (Alice, Bob, Eve, Alex, QA Engineer) and no TeamLeader, so `MGXEnv` cannot be used as-is.
+
+**Implementation:**  
+All BI runner scripts (live tests and the final `bi_team.py`) must instantiate `Team(use_mgx=False)`, which creates a plain `Environment` instead of `MGXEnv`. The plain `Environment.publish_message` has no TeamLeader dependency.
+
+The `ask_human` and `reply_to_human` overrides on `BIRequirementsAnalyst` (DEV-15) already handle terminal I/O independently of MGXEnv, so nothing is lost by switching to the plain environment for the PoC.
+
+**Files changed:** `ClaudeCode_implementation/tests/run_session3_live.py` (and all future runner scripts + `bi_team.py`)
+
+---
+
 ## Session 4 deviations
 
 *(To be filled in during Session 4)*

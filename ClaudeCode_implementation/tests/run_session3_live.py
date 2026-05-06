@@ -99,7 +99,7 @@ async def main():
     # Ensure docs/ exists so the Editor.write call in generate_brd() succeeds
     Path("docs").mkdir(exist_ok=True)
 
-    team = Team()
+    team = Team(use_mgx=False)
     team.hire([BIRequirementsAnalyst()])
     team.run_project(USER_REQUIREMENT)
     await team.run(n_round=N_ROUND)
