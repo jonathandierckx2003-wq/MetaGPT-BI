@@ -198,3 +198,9 @@ metagpt/ext/sela/results/*
 
 metagpt/ext/aflow/data
 metagpt/ext/aflow/scripts/optimized
+
+# Claude Code session history
+.cc-history/
+
+# Local config with credentials — never commit
+config/config2.yaml

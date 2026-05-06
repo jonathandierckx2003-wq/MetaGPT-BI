@@ -1,0 +1,25 @@
+## Context
+
+You are completing your task as the BI Solution Architect. The following artifacts have been published in the shared message pool and form the basis for the DWH Technical Execution Plan you must now produce based exclusively on these.
+
+### Business Requirement Document (BRD)
+
+{brd_content}
+
+### Dimensional Model Specification
+
+{dimensional_model_specification}
+
+### Logical Schema
+
+{logical_schema}
+
+## Available BI Task Types
+
+{bi_task_type_desc}
+
+## Task
+
+Based on the context above, produce a complete DWH Technical Execution Plan following the four sequential reasoning steps defined in your role instruction (select tools -> identify tasks -> order tasks and resolve dependencies -> produce JSON output).
+
+The plan must be output as a valid JSON array where each task strictly conforms to the schema defined in your role instruction. Output the JSON array only, starting directly with [ and ending with ]. Do not include any preamble, explanation, or markdown code fences around the JSON.
