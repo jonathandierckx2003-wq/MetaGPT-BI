@@ -271,7 +271,74 @@ The SDK uses typed enums and typed IDs rather than bare strings. Using the corre
 
 ## Session 3 deviations
 
-*(To be filled in during Session 3)*
+### DEV-15 — `ask_human` and `reply_to_human` overridden for terminal stdin/stdout
+
+**Theoretical design:**  
+The thesis specifies that BIRequirementsAnalyst uses `reply_to_human` (later corrected to `ask_human` in DEV-03) for the elicitation dialogue with the business user.
+
+**Problem:**  
+`RoleZero.ask_human` and `RoleZero.reply_to_human` both check `isinstance(self.rc.env, MGXEnv)` and return "Not in MGXEnv, command will not be executed." when not running in the MetaGPT cloud UI environment. Since the PoC runs as a standalone terminal script, both would silently do nothing, making elicitation impossible.
+
+**Implementation:**  
+Both methods are overridden in `BIRequirementsAnalyst`:
+- `ask_human(question)`: prints the question to stdout, then reads a response from stdin via `asyncio.get_running_loop().run_in_executor(None, input, "Your response: ")` (non-blocking wrapper around the blocking `input()` call).
+- `reply_to_human(content)`: prints to stdout and returns the content. No stdin read since this is a one-way broadcast, not an elicitation turn.
+
+**Why:**  
+The override is the minimum change needed to make elicitation work in the terminal PoC. In a production deployment (MGXEnv or another UI), the overrides could be removed to restore the upstream behaviour. This deviation affects only BIRequirementsAnalyst in Session 3; the other four agents do not need elicitation-style conversation, so no equivalent override is needed there.
+
+**File changed:** `metagpt/roles/bi/bi_requirements_analyst.py`
+
+---
+
+### DEV-16 — Explicit `_watch([UserRequirement])` required in `__init__` for all RoleZero-based BI agents
+
+**Theoretical design:**  
+The thesis specifies that BIRequirementsAnalyst watches `UserRequirement`. This is implicitly assumed to "just work" by the framework.
+
+**Problem discovered during Session 3:**  
+`RoleZero` sets `observe_all_msg_from_buffer = True`. This flag causes `Role.__init__` to skip the automatic `_watch([UserRequirement])` call:
+```python
+# in Role.__init__:
+if not self.observe_all_msg_from_buffer:
+    self._watch(kwargs.pop("watch", [UserRequirement]))
+```
+With `observe_all_msg_from_buffer = True`, `rc.watch` stays empty. In `_observe()`, the filter is:
+```python
+self.rc.news = [n for n in news if (n.cause_by in self.rc.watch or self.name in n.send_to) ...]
+```
+With `rc.watch = {}`, no messages ever match, so `_observe()` returns 0, `run()` returns early, and the agent never acts.
+
+**Implementation:**  
+Each BI role class must explicitly call `self._watch([...])` in its `__init__`, after calling `super().__init__(**kwargs)`. Applies to all 5 agents:
+- BIRequirementsAnalyst: `self._watch([UserRequirement])`
+- BIDataModeler (Session 4): `self._watch([WriteBRD])`
+- BISolutionArchitect (Session 5): `self._watch([WriteDataModel])`
+- BIAnalyticsEngineer (Session 6): `self._watch([WriteExecutionPlan, WriteValidationReport])`
+- BIQAEngineer (Session 7): `self._watch([...execution report action...])`
+
+**Why:**  
+`observe_all_msg_from_buffer = True` (RoleZero default) means all messages are stored in memory for awareness, but the `rc.news` filter still governs which messages actually trigger the agent to react. An explicit `_watch` call is the only way to populate `rc.watch` in RoleZero mode.
+
+**Files changed:** `metagpt/roles/bi/bi_requirements_analyst.py` (and all subsequent BI role files in Sessions 4–7)
+
+---
+
+### DEV-17 — DataSourceInspector imported in bi_requirements_analyst.py to ensure tool registry registration
+
+**Theoretical design:**  
+Not specified.
+
+**Problem:**  
+`DataSourceInspector` is decorated with `@register_tool` in `metagpt/tools/bi/data_source_inspector.py`. The decorator only registers the class when the module is imported. If `bi_requirements_analyst.py` is imported without a prior import of `data_source_inspector.py`, `TOOL_REGISTRY.has_tool("DataSourceInspector")` returns False, and `BM25ToolRecommender` emits a warning and skips DataSourceInspector from the recommended tools, making it invisible to the LLM.
+
+**Implementation:**  
+Added `import metagpt.tools.bi.data_source_inspector  # noqa: F401` at the top of `bi_requirements_analyst.py`. This ensures DataSourceInspector is always registered when the role is imported, regardless of import order.
+
+**Why:**  
+The same pattern will apply to all other BI tool classes used by the other agents — each role class imports its tool classes to guarantee registration. This is a common Python pattern for plugin/registry architectures.
+
+**File changed:** `metagpt/roles/bi/bi_requirements_analyst.py`
 
 ---
 

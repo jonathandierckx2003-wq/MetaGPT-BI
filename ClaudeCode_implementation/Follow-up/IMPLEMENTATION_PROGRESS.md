@@ -14,7 +14,7 @@ A transposition of the MetaGPT Software Company multi-agent system into the Busi
 |---------|-------|--------|
 | 1 | BITaskType enum + 5 prompt files + 4 action classes | ✅ Complete |
 | 2 | 6 tool classes (DuckDBExecutor, DbtRunner, PandasLoader, AirbyteConnector, SupabaseConnector, DataSourceInspector) | ✅ Complete |
-| 3 | BIRequirementsAnalyst (Agent 1) + standalone test | ⏳ Pending |
+| 3 | BIRequirementsAnalyst (Agent 1) + standalone test | ✅ Complete |
 | 4 | BIDataModeler (Agent 2) + standalone test | ⏳ Pending |
 | 5 | BISolutionArchitect (Agent 3) + standalone test | ⏳ Pending |
 | 6 | BIAnalyticsEngineer (Agent 4) + standalone test | ⏳ Pending |
@@ -206,7 +206,61 @@ All 6 classes:
 
 ## Session 3 — BIRequirementsAnalyst (Agent 1)
 
-*(To be filled in during Session 3)*
+**Goal:** Create the first BI agent role class: BIRequirementsAnalyst (Alice). This agent conducts interactive requirements elicitation with the business user via ask_human, inspects data source schemas via DataSourceInspector, and produces a formal BRD by calling generate_brd().
+
+### Files created
+
+#### `metagpt/roles/bi/__init__.py`
+Empty package marker for the new `metagpt/roles/bi/` directory.
+
+#### `metagpt/roles/bi/bi_requirements_analyst.py` — BIRequirementsAnalyst
+
+| Attribute | Value |
+|-----------|-------|
+| `name` | `"Alice"` |
+| `profile` | `"BI Requirements Analyst"` |
+| `goal` | Conduct structured elicitation and produce a complete BRD |
+| `constraints` | Use user's language; never assume unstated requirements; follow BRD format |
+| `instruction` | `BI_REQUIREMENTS_ANALYST_INSTRUCTION` (= ROLE_INSTRUCTION + EXTRA_INSTRUCTION) |
+| `tools` | `["RoleZero", "Editor", "DataSourceInspector", "BIRequirementsAnalyst"]` |
+| `todo_action` | `any_to_name(WriteBRD)` = `"WriteBRD"` |
+| `max_react_loop` | 50 (inherited from RoleZero) |
+
+**Key implementation details:**
+
+| Method | Description |
+|--------|-------------|
+| `__init__` | Calls `super().__init__()` then `self._watch([UserRequirement])` — required because RoleZero's `observe_all_msg_from_buffer=True` prevents the automatic watch setup (DEV-16) |
+| `_update_tool_execution` | Registers `"BIRequirementsAnalyst.generate_brd"` → `self.generate_brd` in the tool execution map |
+| `ask_human(question)` | Overrides RoleZero to use stdin/stdout for terminal elicitation (DEV-15) |
+| `reply_to_human(content)` | Overrides RoleZero to print to stdout (DEV-15) |
+| `generate_brd(elicitation_history, schema_summaries)` | `@register_tool` method: calls WriteBRD.run() → saves via editor.write() → publishes Message with cause_by=WriteBRD to trigger BIDataModeler |
+
+**Class decorator:** `@register_tool(include_functions=["generate_brd"])` — exposes `generate_brd` in TOOL_REGISTRY under the `"BIRequirementsAnalyst"` key.
+
+**Import side-effect:** `import metagpt.tools.bi.data_source_inspector` at module level ensures DataSourceInspector is in TOOL_REGISTRY when the role is imported (DEV-17).
+
+### Cross-session fixes found during Session 3 audit
+
+None — all session 3 changes are contained to the new role class.
+
+### Deviations logged
+
+| Deviation | Summary |
+|-----------|---------|
+| DEV-15 | `ask_human` and `reply_to_human` overridden for terminal stdin/stdout (RoleZero versions only work in MGXEnv) |
+| DEV-16 | Explicit `_watch([UserRequirement])` required in `__init__` for all RoleZero-based BI agents (RoleZero's `observe_all_msg_from_buffer=True` prevents automatic watch setup) |
+| DEV-17 | DataSourceInspector imported at top of bi_requirements_analyst.py to guarantee tool registry registration before BM25ToolRecommender validation |
+
+### Smoke test results
+
+**Test file:** `ClaudeCode_implementation/tests/test_session3_bi_requirements_analyst.py`
+
+**12/12 tests pass:**
+- `TestBIRequirementsAnalystInstantiation`: name, profile, goal, todo_action, tools list, watch set, tool execution map, instruction content
+- `TestToolRegistration`: BIRequirementsAnalyst in TOOL_REGISTRY, generate_brd schema contains correct parameter names
+- `TestAskHumanOverride`: ask_human reads from stdin, reply_to_human returns content
+- `TestGenerateBRD`: generate_brd calls WriteBRD.run(), writes via editor, publishes message with cause_by=WriteBRD and sent_from="Alice"
 
 ---
 
