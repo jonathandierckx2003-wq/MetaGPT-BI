@@ -26,16 +26,69 @@ You are completing your task as the BI Solution Architect. The following artifac
 
 {bi_task_type_desc}
 
+## Required JSON schema — exact field names
+
+Every task in the output array MUST include these exact field names. Do NOT use alternative names like "title", "description", "dependencies", or "tooling" — those names are wrong and will fail validation.
+
+Concrete example of two valid tasks:
+
+[
+  {{
+    "task_id": "1",
+    "dependent_task_ids": [],
+    "instruction": "Initialize a DuckDB database file at the project workspace path.",
+    "task_type": "INSTANTIATION",
+    "tool": "DuckDBExecutor",
+    "tool_args": {{
+      "db_path": "workspace/dwh.duckdb"
+    }}
+  }},
+  {{
+    "task_id": "2",
+    "dependent_task_ids": ["1"],
+    "instruction": "Load sales_transactions.csv into the staging_sales table in DuckDB.",
+    "task_type": "DATA_INGESTION",
+    "tool": "PandasLoader",
+    "tool_args": {{
+      "file_path": "ClaudeCode_implementation/test_data/sales_transactions.csv",
+      "target_table": "staging_sales",
+      "db_path": "workspace/dwh.duckdb"
+    }}
+  }}
+]
+
+Use these tool names in the "tool" field (required for all tasks except CREDENTIAL_REQUEST):
+- DuckDBExecutor — INSTANTIATION (init DuckDB file), SCHEMA_CREATION (CREATE TABLE DDL)
+- PandasLoader — DATA_INGESTION of CSV or Excel flat files into DuckDB
+- DbtRunner — TRANSFORMATION tasks that use dbt SQL models (one task per dimensional table)
+- SupabaseConnector — if Supabase is selected: INSTANTIATION, SCHEMA_CREATION, DATA_INGESTION
+- AirbyteConnector — if Airbyte is selected: CONNECTION_SETUP, DATA_INGESTION from cloud sources
+
+For CREDENTIAL_REQUEST tasks, set "tool" to null and "tool_args" to null:
+{{
+  "task_id": "3",
+  "dependent_task_ids": ["2"],
+  "instruction": "Ask the user for the Supabase project URL, API key, and postgres connection string.",
+  "task_type": "CREDENTIAL_REQUEST",
+  "tool": null,
+  "tool_args": null
+}}
+
 ## Task
 
-Based on the context above, produce a complete DWH Technical Execution Plan following the three sequential reasoning steps defined in your role instruction (select tools -> identify tasks -> order tasks and resolve dependencies -> produce JSON output).
+Based on the context above, produce a complete DWH Technical Execution Plan following the three sequential reasoning steps defined in your role instruction (select tools → identify tasks → order tasks and resolve dependencies).
 
-The plan must be output as a valid JSON array where each task strictly conforms to the schema defined in your role instruction. Output the JSON array only, starting directly with [ and ending with ]. Do not include any preamble, explanation, or markdown code fences around the JSON.
+Output the JSON array only. Start directly with [ and end with ]. No preamble, no explanation, no markdown code fences.
+
+CRITICAL: Use the EXACT field names shown above — task_id, dependent_task_ids, instruction, task_type, tool, tool_args.
+Every task except CREDENTIAL_REQUEST must have a specific tool name from the list above and concrete tool_args with actual file paths, table names, or connection details derived from the BRD and Logical Schema above.
 """
 
 _BI_TASK_TYPE_DESC = "\n".join(
     f"- {t.value}" for t in BITaskType
 )
+
+_REQUIRED_FIELDS = {"task_id", "dependent_task_ids", "instruction", "task_type"}
 
 
 @register_tool(include_functions=["run"])
@@ -84,11 +137,40 @@ class WriteExecutionPlan(Action):
         except json.JSONDecodeError as e:
             raise ValueError(f"WriteExecutionPlan produced invalid JSON: {e}") from e
 
+        if not isinstance(tasks, list) or len(tasks) == 0:
+            raise ValueError("WriteExecutionPlan must return a non-empty JSON array of tasks.")
+
+        errors = []
         for task in tasks:
+            task_id = task.get("task_id", "?")
+
+            # Required fields
+            missing = _REQUIRED_FIELDS - set(task.keys())
+            if missing:
+                errors.append(
+                    f"Task {task_id}: missing required fields {sorted(missing)}. "
+                    f"Use exact names: task_id, dependent_task_ids, instruction, task_type, tool, tool_args."
+                )
+                continue
+
+            # Valid task_type
             task_type = task.get("task_type", "")
             if task_type not in valid_types:
-                raise ValueError(
-                    f"Task {task.get('task_id')} has invalid task_type '{task_type}'. "
+                errors.append(
+                    f"Task {task_id}: invalid task_type '{task_type}'. "
                     f"Must be one of: {sorted(valid_types)}"
                 )
-        logger.info(f"WriteExecutionPlan: validated {len(tasks)} tasks, all task_types are valid.")
+
+            # Non-CREDENTIAL_REQUEST tasks must have a tool
+            if task_type != "CREDENTIAL_REQUEST" and not task.get("tool"):
+                errors.append(
+                    f"Task {task_id} (type={task_type}): missing 'tool' field. "
+                    f"Use one of: DuckDBExecutor, PandasLoader, DbtRunner, SupabaseConnector, AirbyteConnector."
+                )
+
+        if errors:
+            raise ValueError(
+                "WriteExecutionPlan validation failed:\n" + "\n".join(f"  - {e}" for e in errors)
+            )
+
+        logger.info(f"WriteExecutionPlan: validated {len(tasks)} tasks, all required fields and task_types are valid.")

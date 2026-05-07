@@ -154,7 +154,7 @@ async def main():
     output_path = Path("workspace/docs/execution_plan.json")
     if output_path.exists():
         size = output_path.stat().st_size
-        print(f"  ✓ {output_path}  ({size} bytes)")
+        print(f"  [OK] {output_path}  ({size} bytes)")
 
         # Validate the JSON is parseable and contains at least one task
         try:
@@ -181,7 +181,7 @@ async def main():
                 for msg in bad_tasks:
                     print(msg)
             else:
-                print(f"  ✓ All tasks have required fields and valid task_types")
+                print(f"  [OK] All tasks have required fields and valid task_types")
 
             # Print task summary
             print(f"\n  Task breakdown:")
@@ -193,7 +193,7 @@ async def main():
         except json.JSONDecodeError as e:
             print(f"\n  WARNING: execution_plan.json is not valid JSON: {e}")
     else:
-        print(f"  ✗ MISSING: {output_path}")
+        print(f"  [MISSING] {output_path}")
         print()
         print("  WARNING: execution_plan.json was NOT created.")
         print("  Eve may not have reached generate_execution_plan() within the round budget.")

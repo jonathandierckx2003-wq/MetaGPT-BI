@@ -122,11 +122,19 @@ class BISolutionArchitect(RoleZero):
 
         # --- Call WriteExecutionPlan to produce the validated JSON plan ---
         write_execution_plan = WriteExecutionPlan()
-        plan_json = await write_execution_plan.run(
-            brd_content=brd_content,
-            dimensional_model_specification=dimensional_model_specification,
-            logical_schema=logical_schema,
-        )
+        try:
+            plan_json = await write_execution_plan.run(
+                brd_content=brd_content,
+                dimensional_model_specification=dimensional_model_specification,
+                logical_schema=logical_schema,
+            )
+        except ValueError as exc:
+            return (
+                f"Error: The generated execution plan failed schema validation: {exc}\n\n"
+                f"Please call BISolutionArchitect.generate_execution_plan() again to produce a corrected plan. "
+                f"Use ONLY the exact field names: task_id, dependent_task_ids, instruction, task_type, tool, tool_args. "
+                f"Every non-CREDENTIAL_REQUEST task must have a specific tool name."
+            )
 
         # --- Save to file via Editor (writes to workspace/docs/ — DEV-27) ---
         plan_path = "docs/execution_plan.json"
