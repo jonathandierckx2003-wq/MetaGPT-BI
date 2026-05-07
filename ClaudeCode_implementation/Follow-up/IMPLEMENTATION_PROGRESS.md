@@ -15,7 +15,7 @@ A transposition of the MetaGPT Software Company multi-agent system into the Busi
 | 1 | BITaskType enum + 5 prompt files + 4 action classes | ✅ Complete |
 | 2 | 6 tool classes (DuckDBExecutor, DbtRunner, PandasLoader, AirbyteConnector, SupabaseConnector, DataSourceInspector) | ✅ Complete |
 | 3 | BIRequirementsAnalyst (Agent 1) + standalone test + live e2e test | ✅ Complete |
-| 4 | BIDataModeler (Agent 2) + standalone test | ⏳ Pending |
+| 4 | BIDataModeler (Agent 2) + standalone test + live e2e test | ✅ Complete |
 | 5 | BISolutionArchitect (Agent 3) + standalone test | ⏳ Pending |
 | 6 | BIAnalyticsEngineer (Agent 4) + standalone test | ⏳ Pending |
 | 7 | BIQAEngineer (Agent 5) + bi_team.py + end-to-end test | ⏳ Pending |
@@ -323,7 +323,99 @@ The generated BRD covers all 8 required sections from the spec plus additional s
 
 ## Session 4 — BIDataModeler (Agent 2)
 
-*(To be filled in during Session 4)*
+**Goal:** Create the second BI agent role class: BIDataModeler (Bob). This agent observes the BRD published by Alice, executes a four-step dimensional modeling reasoning loop (analyze BRD → choose schema type → identify facts/dims/measures/hierarchies → generate artifacts), and produces three output files by calling `generate_data_model()`.
+
+### Files created
+
+#### `metagpt/roles/bi/bi_data_modeler.py` — BIDataModeler
+
+| Attribute | Value |
+|-----------|-------|
+| `name` | `"Bob"` |
+| `profile` | `"BI Data Modeler"` |
+| `goal` | Translate BRD into complete dimensional design |
+| `constraints` | Same language as BRD; decisions based exclusively on BRD; justify schema choice; strict Mermaid syntax |
+| `instruction` | `BI_DATA_MODELER_INSTRUCTION` (= ROLE_INSTRUCTION + EXTRA_INSTRUCTION) |
+| `tools` | `["RoleZero", "Editor", "BIDataModeler"]` |
+| `todo_action` | `any_to_name(WriteDataModel)` = `"WriteDataModel"` |
+
+**Key implementation details:**
+
+| Method | Description |
+|--------|-------------|
+| `__init__` | Calls `super().__init__()` then `self._watch([WriteBRD])` — required by DEV-16 |
+| `_quick_think` | Always returns `(None, "TASK")` — prevents AMBIGUOUS short-circuit (DEV-22) |
+| `_update_tool_execution` | Registers `BIDataModeler.generate_data_model` in tool execution map (DEV-21) |
+| `_render_mermaid_schemas` | Private helper: calls `mermaid_to_file()` for both schemas; gracefully skips if engine unavailable |
+| `generate_data_model()` | `@register_tool` method: retrieves BRD from memory (DEV-28) → calls `WriteDataModel.run()` → saves 3 files via `editor.write()` → renders to SVG (DEV-29) → publishes `Message(cause_by=WriteDataModel)` to trigger BISolutionArchitect |
+
+**Output files saved by `generate_data_model()`:**
+- `workspace/docs/dimensional_model_specification.md`
+- `workspace/docs/conceptual_schema.mermaid` (+ `conceptual_schema.svg` if mmdc available)
+- `workspace/docs/logical_schema.mermaid` (+ `logical_schema.svg` if mmdc available)
+
+### Files modified
+
+#### `metagpt/prompts/bi/bi_data_modeler.py`
+Step 4 updated (DEV-24 + DEV-28):
+- Added `BIDataModeler.` class prefix (DEV-24 — fully-qualified name)
+- Removed `brd_content` parameter (DEV-28 — BRD retrieved from memory)
+
+### Deviations logged
+
+| Deviation | Summary |
+|-----------|---------|
+| DEV-28 | `generate_data_model()` takes no arguments; BRD retrieved internally from `self.rc.memory` — avoids doubling token cost and truncation risk |
+| DEV-29 | Mermaid schemas rendered to SVG via `mermaid_to_file()` after text save; graceful fallback if engine unavailable; `mmdc` confirmed available on dev machine |
+| DEV-31 | `write_data_model.py` (Session 1 file): `_strip_mermaid_fences()` helper added; PROMPT_TEMPLATE strengthened with CRITICAL MERMAID RULES block (erDiagram only, no code fences) — defensive post-processing after LLM ignored fence prohibition during live test |
+| DEV-32 | `reply_to_human` overridden in BIDataModeler for terminal visibility — same pattern as DEV-15 in BIRequirementsAnalyst; Bob's completion notices were invisible in terminal without this override |
+| DEV-33 | MANDATORY guard added at end of Step 4 in `bi_data_modeler.py` prompt — LLM called `end` before `generate_data_model()` on second live test run; guard also extended to prevent post-generation self-review attempts (Editor.read with absolute path on Windows resolves incorrectly) |
+
+### Smoke test results
+
+**Test file:** `ClaudeCode_implementation/tests/test_session4_bi_data_modeler.py`
+
+**13/13 tests pass:**
+- `TestBIDataModelerInstantiation`: name, profile, goal, todo_action, tools list, watch set, tool execution map entry, instruction content, fully-qualified method name in instruction
+- `TestToolRegistration`: BIDataModeler in TOOL_REGISTRY, `generate_data_model` schema does NOT expose `brd_content` parameter
+- `TestGenerateDataModel`: saves 3 files with correct paths/extensions/content, publishes message with `cause_by=WriteDataModel` and `sent_from="Bob"`, combined content contains all three artifacts, returns confirmation with all three paths, error handling when no BRD in memory, BRD content from memory passed unchanged to `WriteDataModel.run()`
+
+**Side discovery:** `mmdc` is already installed (`C:\Users\jonat\AppData\Roaming\npm\mmdc`) — Mermaid rendering to SVG ran successfully during smoke tests.
+
+### Live integration test
+
+**Test file:** `ClaudeCode_implementation/tests/run_session4_live.py`  
+**LLM used:** OpenAI gpt-5.4-mini (`config/config2.yaml`)
+
+**Status:** ✅ FULLY COMPLETE — all three text artifacts and both SVG renders verified.
+
+**Bugs found and fixed during live testing:**
+
+| Bug | Fix | DEV |
+|-----|-----|-----|
+| LLM wrapped Mermaid output in ` ```mermaid ` code fences despite instruction → `mmdc` raised `UnknownDiagramError` | `_strip_mermaid_fences()` helper added to `write_data_model.py`; applied to both schemas after XML extraction | DEV-31 |
+| LLM used `classDiagram` for logical schema instead of `erDiagram` | PROMPT_TEMPLATE strengthened with CRITICAL MERMAID RULES block | DEV-31 |
+| LLM called `end` in round 1 without calling `generate_data_model()` (second test run; non-deterministic) | MANDATORY guard added to Step 4 of `bi_data_modeler.py` prompt | DEV-33 |
+| After `generate_data_model()`, LLM tried to self-review via `Editor.read` with absolute path → `FileNotFoundError` on Windows | MANDATORY guard extended: "call end immediately after generate_data_model() returns" | DEV-33 |
+
+**What was verified working (confirmed re-run after fixes):**
+- ✅ `BIDataModeler.generate_data_model()` called in round 1
+- ✅ `WriteDataModel.run()` LLM call succeeded; all three XML-delimited sections parsed correctly
+- ✅ Both `.mermaid` files start directly with `erDiagram` — no code fences, no `classDiagram`
+- ✅ `mermaid_to_file()` rendered both schemas to SVG without error: `conceptual_schema.svg` (171 KB), `logical_schema.svg` (238 KB)
+- ✅ Message published with `cause_by=WriteDataModel` to trigger BISolutionArchitect
+- ✅ Bob's reply_to_human completion notice printed to terminal (DEV-32)
+- ✅ `end` command called cleanly after artifact save
+
+### Cross-session impact of Session 4
+
+| Area | Impact |
+|------|--------|
+| `metagpt/prompts/bi/bi_data_modeler.py` (Session 1) | **Changed** — Step 4 updated to `BIDataModeler.generate_data_model()` (DEV-24 + DEV-28). Already documented. |
+| `metagpt/actions/bi/write_data_model.py` (Session 1) | **Changed** (DEV-31) — `_strip_mermaid_fences()` helper added; PROMPT_TEMPLATE strengthened with CRITICAL MERMAID RULES block. Additive and defensive; no breaking changes to callers. |
+| All Session 2 tool classes | No impact — changes are entirely within the role and action layers. |
+| All Session 3 framework fixes and role | No impact. |
+| `metagpt/actions/bi/write_execution_plan.py` (Session 1) | **Forward concern** — `run(brd_content, dimensional_model_specification, logical_schema)` has the same double-token / truncation problem as DEV-28. Logged as **DEV-30** (pre-logged for Session 5): BISolutionArchitect must use a `generate_execution_plan()` wrapper method that retrieves documents from memory, same pattern as Bob. |
 
 ---
 

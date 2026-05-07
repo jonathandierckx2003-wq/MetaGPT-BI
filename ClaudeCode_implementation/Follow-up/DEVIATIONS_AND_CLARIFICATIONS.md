@@ -585,7 +585,137 @@ All BI agents' `generate_*()` methods (Sessions 4–7) must NOT call `Path(...).
 
 ## Session 4 deviations
 
-*(To be filled in during Session 4)*
+### DEV-28 — `generate_data_model()` retrieves BRD from memory instead of accepting it as a parameter
+
+**Theoretical design:**
+The original EXTRA_INSTRUCTION for Agent 2 (updated in DEV-06) instructs the LLM to call `generate_data_model(brd_content)`, passing the full BRD text as an argument.
+
+**Problem:**
+Passing the entire BRD markdown (~16,000 characters / ~4,000 tokens) as a literal string inside a JSON function-call argument would:
+1. Double the token consumption (BRD is already in the LLM context from memory).
+2. Risk truncation: the LLM might cut off the BRD text when serialising it into the JSON command.
+3. Introduce a fragile copy-paste step with no benefit — the canonical BRD is already in `self.rc.memory`.
+
+**Implementation:**
+`generate_data_model()` takes no arguments. Internally it iterates `reversed(self.rc.memory.get())` to find the most recent message with `cause_by == any_to_str(WriteBRD)` and uses its `content` as the BRD. An error string is returned if no such message is found.
+
+The EXTRA_INSTRUCTION Step 4 is updated from:
+```
+Call generate_data_model(brd_content) to write and save the three deliverables...
+```
+to:
+```
+Call BIDataModeler.generate_data_model() to write and save the three deliverables...
+```
+(This also applies DEV-24 — fully-qualified class prefix — which was not yet applied to Agent 2's prompt.)
+
+**Files changed:** `metagpt/roles/bi/bi_data_modeler.py`, `metagpt/prompts/bi/bi_data_modeler.py`
+
+---
+
+### DEV-29 — Mermaid schemas rendered to SVG via `mermaid_to_file()` after text save
+
+**Theoretical design:**
+The thesis notes that the `.mermaid` files "can be rendered to visual files using external drivers such as mermaidcli or Playwright/Pyppeteer that are installed together with the MetaGPT system." The spec and prompts only specify saving `.mermaid` text files; no rendering step is defined.
+
+**Implementation:**
+`generate_data_model()` calls a private `_render_mermaid_schemas()` helper after saving the `.mermaid` text files. This helper calls MetaGPT's `mermaid_to_file()` for both schemas, using the engine configured in `config.mermaid.engine` (default: `"nodejs"`, using `mmdc` from `@mermaid-js/mermaid-cli`). Output SVG files are saved to `workspace/docs/conceptual_schema.svg` and `workspace/docs/logical_schema.svg`.
+
+The helper is wrapped in a broad `try/except`: if the engine is unavailable or rendering fails for any reason, a warning is logged and execution continues normally. The `.mermaid` text files are always saved regardless.
+
+**Discovery during smoke test:** `mmdc` (mermaid-cli) is already installed on the development machine (`C:\Users\jonat\AppData\Roaming\npm\mmdc`), so rendering works out of the box.
+
+**Why:** The rendered SVG files give the human user (and downstream agents, if needed) immediately viewable diagrams without requiring a separate rendering step. The graceful fallback ensures the agent does not break in environments without mmdc.
+
+**Files changed:** `metagpt/roles/bi/bi_data_modeler.py`
+
+---
+
+### DEV-31 — `write_data_model.py`: strip Mermaid code fences and strengthen erDiagram requirement
+
+**Discovered during:** Session 4 live test.
+
+**Problem 1 — code fences in LLM output (rendering failure):**
+Despite the PROMPT_TEMPLATE saying "Do NOT wrap in ```mermaid code fences", the LLM wrapped both Mermaid schemas in ` ```mermaid ... ``` ` markdown code blocks. `mmdc` received the raw text starting with ` ```mermaid ` and raised `UnknownDiagramError: No diagram type detected`. The `.mermaid` files were saved with fences included, and the SVG renderer failed to produce valid diagrams.
+
+**Problem 2 — LLM used `classDiagram` for the logical schema:**
+The logical schema was produced in Mermaid `classDiagram` syntax (using `class` keywords) instead of `erDiagram`. Both schemas must use `erDiagram` per the spec and prompt instructions.
+
+**Fix 1 — defensive code-fence stripping in `write_data_model.py`:**
+Added `_strip_mermaid_fences(text)` helper that removes ` ``` ` / ` ```mermaid ` + ` ``` ` wrappers from the extracted Mermaid text. Applied to both `conceptual_schema` and `logical_schema` values returned by `run()`. This is a defensive post-processing step: even if the LLM ignores the instruction, the saved `.mermaid` files and the SVG rendering receive clean Mermaid code.
+
+**Fix 2 — strengthened PROMPT_TEMPLATE:**
+The output format instructions for both Mermaid artifacts now include an explicit block at the top:
+```
+CRITICAL MERMAID RULES:
+- Use Mermaid erDiagram syntax ONLY. Do NOT use classDiagram, sequenceDiagram, or any other diagram type.
+- Do NOT wrap the Mermaid code in ```mermaid code fences or any other code block markers.
+- Output raw Mermaid code only, starting directly with the word `erDiagram` on the first line.
+```
+
+**Files changed:** `metagpt/actions/bi/write_data_model.py`
+
+---
+
+### DEV-32 — `reply_to_human` overridden in BIDataModeler for terminal visibility
+
+**Discovered during:** Session 4 live test.
+
+**Problem:**
+Bob's status announcements (plan update + completion notice) produce "Not in MGXEnv, command will not be executed." because `RoleZero.reply_to_human` only works inside MGXEnv. DEV-15 intentionally restricted the override to BIRequirementsAnalyst, noting the other agents don't need elicitation. However, Bob's completion announcements are completely invisible in terminal runs, making the output harder to follow.
+
+**Implementation:**
+Added `reply_to_human(content)` override to BIDataModeler — same pattern as DEV-15 in BIRequirementsAnalyst: prints `[Bob - BI Data Modeler]: {content}` to stdout and returns the content.
+
+**Files changed:** `metagpt/roles/bi/bi_data_modeler.py`
+
+---
+
+### DEV-33 — MANDATORY guard added to Step 4 prompt to prevent premature `end` command
+
+**Discovered during:** Session 4 live test re-run (verification of DEV-31 fix).
+
+**Problem:**
+During the re-run of the Session 4 live test, the LLM called `end` in round 1 without ever calling `BIDataModeler.generate_data_model()`. The model interpreted writing a plan description as completing the task, then called `end` to finalize. The original EXTRA_INSTRUCTION Step 4 says "Call BIDataModeler.generate_data_model()" but does not explicitly forbid calling `end` first.
+
+This is non-deterministic: the first live test run (different random seed) correctly called `generate_data_model()`. The second run did not.
+
+**Implementation:**
+Added an explicit mandatory guard sentence at the end of Step 4 in `bi_data_modeler.py`:
+```
+**MANDATORY: You MUST call BIDataModeler.generate_data_model() before calling end. Do not call end without first completing this step.**
+```
+
+**Why:**
+The RoleZero `_quick_think` override (DEV-22) prevents the QUICK/AMBIGUOUS classification shortcuts but does not prevent the LLM from calling `end` prematurely inside the `_act` phase. The guard makes the mandatory ordering explicit at the LLM instruction level.
+
+A second issue was also discovered during the verified re-run: after `generate_data_model()` completed, the LLM tried to self-review the saved artifacts by calling `Editor.read` with an absolute path `/workspace/docs/...`. On Windows this resolves to `C:\workspace\...` (not `C:\Users\jonat\MetaGPT-BI\workspace\...`), causing a `FileNotFoundError`. The MANDATORY guard was therefore extended to also prohibit post-generation review: "Once generate_data_model() returns successfully, call end immediately — do not attempt to read, review, or edit the saved files afterward."
+
+**Files changed:** `metagpt/prompts/bi/bi_data_modeler.py`
+
+---
+
+### DEV-30 — (Pre-logged from Session 4 cross-session audit) `WriteExecutionPlan.run()` parameter pattern must follow DEV-28
+
+**Root cause:** Session 4 cross-session impact analysis.
+
+**Problem:**
+`WriteExecutionPlan.run(brd_content, dimensional_model_specification, logical_schema)` (Session 1 file) takes three large document strings as parameters. If BISolutionArchitect calls `WriteExecutionPlan.run()` directly from the ReAct loop (as originally designed in DEV-04), the LLM would have to serialise all three documents (~6,000–8,000 tokens combined) as literal string arguments in a JSON command. This is the exact same double-token / truncation problem that DEV-28 solved for Bob's `generate_data_model()`.
+
+**Planned fix (to implement in Session 5):**
+Add a `generate_execution_plan()` wrapper method on `BISolutionArchitect`, following the same pattern as `generate_data_model()` on `BIDataModeler`:
+- Takes no parameters.
+- Internally retrieves BRD content (from the WriteBRD message in memory), dimensional model spec, and logical schema (from the WriteDataModel message in memory).
+- Calls `WriteExecutionPlan.run(brd_content, dimensional_model_specification, logical_schema)` with retrieved content.
+- Saves result to `docs/execution_plan.json` via `editor.write()`.
+- Publishes `Message(cause_by=any_to_str(WriteExecutionPlan))` to trigger BIAnalyticsEngineer.
+
+Consequent changes needed in Session 5:
+- `BISolutionArchitect` tools list: add `"BISolutionArchitect"` (remove `"WriteExecutionPlan"` as callable entry point).
+- `bi_solution_architect.py` prompt: replace `"Use Editor to write and save the JSON plan to docs/execution_plan.json"` with `"Call BISolutionArchitect.generate_execution_plan()"`.
+- `WriteExecutionPlan` keeps its current signature (still needed for the internal LLM call with the full document context).
+
+**Files to change in Session 5:** `metagpt/roles/bi/bi_solution_architect.py` (new file), `metagpt/prompts/bi/bi_solution_architect.py`
 
 ---
 

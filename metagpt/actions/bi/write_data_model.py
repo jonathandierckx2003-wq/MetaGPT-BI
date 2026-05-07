@@ -23,16 +23,21 @@ Logical Schema) by closely following the format and rules defined in your role i
 
 Return all three artifacts in a single response, each wrapped in the XML tags shown below. Do not include any text outside these tags.
 
+CRITICAL MERMAID RULES — apply to both the Conceptual Schema and Logical Schema:
+- Use Mermaid **erDiagram** syntax ONLY. Do NOT use classDiagram, sequenceDiagram, or any other diagram type.
+- Do NOT wrap the Mermaid code in ```mermaid code fences or any other code block markers.
+- Output raw Mermaid code only, starting directly with the word `erDiagram` on the first line.
+
 <dimensional_model_specification>
 [Full Dimensional Model Specification document in Markdown, following the format defined in your role instruction]
 </dimensional_model_specification>
 
 <conceptual_schema>
-[Full Conceptual Schema in Mermaid syntax]
+[Full Conceptual Schema in Mermaid erDiagram syntax — raw code only, no code fences, starting with erDiagram]
 </conceptual_schema>
 
 <logical_schema>
-[Full Logical Schema in Mermaid syntax]
+[Full Logical Schema in Mermaid erDiagram syntax — raw code only, no code fences, starting with erDiagram]
 </logical_schema>
 """
 
@@ -44,6 +49,16 @@ _TAG_PATTERN = re.compile(
     r"<logical_schema>(.*?)</logical_schema>",
     re.DOTALL,
 )
+
+
+def _strip_mermaid_fences(text: str) -> str:
+    """Strip markdown code fences if the LLM wrapped the Mermaid output despite being told not to."""
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        end = len(lines) - 1 if lines and lines[-1].strip() == "```" else len(lines)
+        return "\n".join(lines[1:end]).strip()
+    return stripped
 
 
 class WriteDataModel(Action):
@@ -64,8 +79,8 @@ class WriteDataModel(Action):
         if match:
             return {
                 "dimensional_model_specification": match.group(1).strip(),
-                "conceptual_schema": match.group(2).strip(),
-                "logical_schema": match.group(3).strip(),
+                "conceptual_schema": _strip_mermaid_fences(match.group(2).strip()),
+                "logical_schema": _strip_mermaid_fences(match.group(3).strip()),
             }
 
         # Fallback: return raw text under the first key so callers can inspect it.

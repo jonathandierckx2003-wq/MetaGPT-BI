@@ -62,7 +62,9 @@ Apply the following general dimensional modeling rules:
 
 ### Step 4: Produce the three output artifacts
 
-Call generate_data_model(brd_content) to write and save the three deliverables as separate files in the project's docs folder. Inform the user once all three files are saved.
+Call BIDataModeler.generate_data_model() to write and save the three deliverables as separate files in the project's docs folder. Inform the user once all three files are saved.
+
+**MANDATORY: You MUST call BIDataModeler.generate_data_model() before calling end. Once generate_data_model() returns successfully, call end immediately — do not attempt to read, review, or edit the saved files afterward.**
 
 ---
 
