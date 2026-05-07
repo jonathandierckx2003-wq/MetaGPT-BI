@@ -149,6 +149,9 @@ class OpenAILLM(BaseLLM):
             # compatible to openai o1-series
             kwargs["temperature"] = 1
             kwargs.pop("max_tokens")
+        elif "gpt-5" in self.model or "o3" in self.model or "o4" in self.model:
+            # newer OpenAI models require max_completion_tokens instead of max_tokens
+            kwargs["max_completion_tokens"] = kwargs.pop("max_tokens")
         if extra_kwargs:
             kwargs.update(extra_kwargs)
         return kwargs

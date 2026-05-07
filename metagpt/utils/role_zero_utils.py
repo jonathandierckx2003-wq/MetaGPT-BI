@@ -133,6 +133,21 @@ async def parse_commands(command_rsp: str, llm, exclusive_tool_commands: list[st
     if isinstance(commands, dict):
         commands = commands["commands"] if "commands" in commands else [commands]
 
+    # Drop any entries that are missing 'command_name' (e.g. repair LLM produced wrong structure)
+    if isinstance(commands, list):
+        valid = [cmd for cmd in commands if isinstance(cmd, dict) and "command_name" in cmd]
+        if len(valid) < len(commands):
+            logger.warning(f"Dropped {len(commands) - len(valid)} command(s) missing 'command_name' key")
+        if not valid:
+            return (
+                "Your last response was not formatted as a JSON command block. "
+                "You must always respond with a JSON list of commands, e.g.: "
+                '[{"command_name": "RoleZero.ask_human", "args": {"question": "..."}}]',
+                False,
+                command_rsp,
+            )
+        commands = valid
+
     # Set the exclusive command flag to False.
     command_flag = [command["command_name"] not in exclusive_tool_commands for command in commands]
     if command_flag.count(False) > 1:

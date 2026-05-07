@@ -103,7 +103,6 @@ class BIRequirementsAnalyst(RoleZero):
         )
 
         brd_path = Path("docs") / "business_requirement_document.md"
-        brd_path.parent.mkdir(parents=True, exist_ok=True)
         self.editor.write(path=str(brd_path), content=brd_content)
 
         # Publish with cause_by=WriteBRD so BIDataModeler observes and triggers next phase.

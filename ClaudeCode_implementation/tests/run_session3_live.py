@@ -85,7 +85,7 @@ async def main():
     print("=" * 70)
     print("  Live integration test — BIRequirementsAnalyst (Alice, Agent 1)")
     print("=" * 70)
-    print(f"\nLLM  : Cerebras / llama3.1-8b  (config/config2.yaml)")
+    print(f"\nLLM  : OpenAI / gpt-5.4-mini  (config/config2.yaml)")
     print(f"Data : ClaudeCode_implementation/test_data/  (3 CSV files)")
     print(f"Output: docs/business_requirement_document.md")
     print(f"Budget: {N_ROUND} reasoning rounds\n")
@@ -106,7 +106,10 @@ async def main():
 
     print()
     print("=" * 70)
-    brd_path = Path("docs") / "business_requirement_document.md"
+    # MetaGPT's Editor writes files to workspace/ — check both locations
+    brd_path = Path("workspace/docs") / "business_requirement_document.md"
+    if not brd_path.exists():
+        brd_path = Path("docs") / "business_requirement_document.md"
     if brd_path.exists():
         size = brd_path.stat().st_size
         print(f"  BRD saved: {brd_path}  ({size} bytes)")
