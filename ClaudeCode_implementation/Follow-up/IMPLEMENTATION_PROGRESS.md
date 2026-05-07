@@ -231,18 +231,49 @@ Empty package marker for the new `metagpt/roles/bi/` directory.
 | Method | Description |
 |--------|-------------|
 | `__init__` | Calls `super().__init__()` then `self._watch([UserRequirement])` — required because RoleZero's `observe_all_msg_from_buffer=True` prevents the automatic watch setup (DEV-16) |
-| `_update_tool_execution` | Registers `"BIRequirementsAnalyst.generate_brd"` → `self.generate_brd` in the tool execution map |
+| `_quick_think` | Overrides RoleZero to always return `(None, "TASK")` — forces Alice into the full ReAct loop; prevents AMBIGUOUS short-circuit that would call `reply_to_human` once and go idle (DEV-22) |
+| `_update_tool_execution` | Registers `generate_brd` and all four `DataSourceInspector` methods in the tool execution map — TOOL_REGISTRY only provides schemas to the LLM recommender; callables must be wired manually (DEV-21) |
 | `ask_human(question)` | Overrides RoleZero to use stdin/stdout for terminal elicitation (DEV-15) |
 | `reply_to_human(content)` | Overrides RoleZero to print to stdout (DEV-15) |
 | `generate_brd(elicitation_history, schema_summaries)` | `@register_tool` method: calls WriteBRD.run() → saves via editor.write() → publishes Message with cause_by=WriteBRD to trigger BIDataModeler |
 
 **Class decorator:** `@register_tool(include_functions=["generate_brd"])` — exposes `generate_brd` in TOOL_REGISTRY under the `"BIRequirementsAnalyst"` key.
 
-**Import side-effect:** `import metagpt.tools.bi.data_source_inspector` at module level ensures DataSourceInspector is in TOOL_REGISTRY when the role is imported (DEV-17).
+**Tool import:** `from metagpt.tools.bi.data_source_inspector import DataSourceInspector` at module level ensures DataSourceInspector is in TOOL_REGISTRY when the role is imported, and makes the class available for instantiation in `_update_tool_execution` (DEV-17, updated from side-effect import).
 
-### Cross-session fixes found during Session 3 audit
+**Prompt command names:** All tool call references in `bi_requirements_analyst.py` use fully-qualified names (`RoleZero.ask_human`, `BIRequirementsAnalyst.generate_brd`) matching the keys in `tool_execution_map`. Bare names (e.g. `ask_human`) are not found by the RoleZero dispatcher (DEV-24).
 
-None — all session 3 changes are contained to the new role class.
+### Cross-session fixes applied after Session 3 audit
+
+| Fix | File changed |
+|-----|-------------|
+| DEV-18: WriteDataModel.run() returns parsed dict; PROMPT_TEMPLATE uses XML delimiters instead of "Use the Editor tool" | `metagpt/actions/bi/write_data_model.py` |
+| DEV-19: CREDENTIAL_REQUEST protocol: `reply_to_human` → `ask_human` | `metagpt/prompts/bi/bi_analytics_engineer.py` |
+
+### Live integration test
+
+**Test file:** `ClaudeCode_implementation/tests/run_session3_live.py`
+
+**Status:** Phase 1 verified complete. Phase 2 not yet reached due to free-tier token limits.
+
+**Bugs found and fixed during live testing:**
+
+| Bug | Fix | DEV |
+|-----|-----|-----|
+| `MGXEnv.publish_message` crashes without a TeamLeader role | `Team(use_mgx=False)` — use plain `Environment` for BI PoC | DEV-20 |
+| `Command ask_human not found` — bare name not in dispatch map | Prompt updated to use `RoleZero.ask_human` and `BIRequirementsAnalyst.generate_brd` | DEV-24 |
+| `Command DataSourceInspector.inspect_csv not found` — TOOL_REGISTRY ≠ tool_execution_map | Instantiate `DataSourceInspector()` and wire all 4 methods in `_update_tool_execution` | DEV-21 |
+| `AMBIGUOUS` classification short-circuits ReAct loop | Override `_quick_think` to always return `(None, "TASK")` | DEV-22 |
+| `inspect_csv` output ~5,000 tokens (verbose product descriptions, all-null columns) → hits free-tier TPM limit | Skip entirely-null columns; truncate sample strings to 60 chars | DEV-23 |
+| Groq free-tier TPM limit (12k tokens/request) hit after CSV inspection round | Architecture proven; use paid API (gpt-4o-mini ~€0.01/run) for Phase 2 test | — |
+
+**What was verified working in live run:**
+- ✅ RoleZero ReAct loop activates on `UserRequirement` message
+- ✅ `RoleZero.ask_human` blocks for stdin input and returns response correctly
+- ✅ All 7 elicitation topics covered across 6 sequential `ask_human` calls
+- ✅ `DataSourceInspector.inspect_csv` called on all 3 CSVs and results returned to agent context
+- ✅ Agent correctly progresses through topics in order (end-users → goals → queries → KPIs → data sources → non-functional)
+- ⏳ Topic 7 (additional context) + Phase 2 (`generate_brd` call) not yet reached — free-tier TPM constraint only
 
 ### Deviations logged
 
@@ -250,14 +281,19 @@ None — all session 3 changes are contained to the new role class.
 |-----------|---------|
 | DEV-15 | `ask_human` and `reply_to_human` overridden for terminal stdin/stdout (RoleZero versions only work in MGXEnv) |
 | DEV-16 | Explicit `_watch([UserRequirement])` required in `__init__` for all RoleZero-based BI agents (RoleZero's `observe_all_msg_from_buffer=True` prevents automatic watch setup) |
-| DEV-17 | DataSourceInspector imported at top of bi_requirements_analyst.py to guarantee tool registry registration before BM25ToolRecommender validation |
+| DEV-17 | DataSourceInspector imported at top of bi_requirements_analyst.py to guarantee tool registry registration; changed from side-effect import to direct class import to also support `_update_tool_execution` instantiation |
+| DEV-20 | `Team(use_mgx=False)` required — MGXEnv crashes without a TeamLeader role; applies to all BI runner scripts and `bi_team.py` |
+| DEV-21 | External tool class methods must be manually instantiated and wired into `tool_execution_map` in `_update_tool_execution` — TOOL_REGISTRY only provides LLM-visible schemas, not callables; applies to all BI agents |
+| DEV-22 | `_quick_think` overridden in BIRequirementsAnalyst to always return `(None, "TASK")` — prevents non-deterministic AMBIGUOUS classification from short-circuiting the elicitation loop |
+| DEV-23 | `DataSourceInspector.inspect_csv` updated: skip entirely-null columns + truncate sample strings to 60 chars — prevents verbose product catalogue files from exceeding free-tier token limits |
+| DEV-24 | All tool call references in BI prompts must use fully-qualified `ClassName.method_name` format matching the `tool_execution_map` keys — bare method names (e.g. `ask_human`) are not found by the RoleZero dispatcher; applies to all BI agents |
 
 ### Smoke test results
 
 **Test file:** `ClaudeCode_implementation/tests/test_session3_bi_requirements_analyst.py`
 
-**12/12 tests pass:**
-- `TestBIRequirementsAnalystInstantiation`: name, profile, goal, todo_action, tools list, watch set, tool execution map, instruction content
+**13/13 tests pass** (1 new test added for DataSourceInspector execution map wiring):
+- `TestBIRequirementsAnalystInstantiation`: name, profile, goal, todo_action, tools list, watch set, tool execution map entries, instruction content
 - `TestToolRegistration`: BIRequirementsAnalyst in TOOL_REGISTRY, generate_brd schema contains correct parameter names
 - `TestAskHumanOverride`: ask_human reads from stdin, reply_to_human returns content
 - `TestGenerateBRD`: generate_brd calls WriteBRD.run(), writes via editor, publishes message with cause_by=WriteBRD and sent_from="Alice"

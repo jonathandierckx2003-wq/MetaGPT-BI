@@ -284,7 +284,7 @@ DO NOT modify these. Read them as structural references only:
 "I need a BI application for my weekly sales analysis. I have CSV files."
 
 **Test dataset:**
-Two CSV files in `bi_implementation/test_data/`:
+Two CSV files in `ClaudeCode_implementation/test_data/`:
 - `sales_transactions.csv` — columns: transaction_id, date, product_id, customer_id,
   region, quantity, unit_price, total_amount
 - `products.csv` — columns: product_id, product_name, category, subcategory, supplier
