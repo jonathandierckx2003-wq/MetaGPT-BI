@@ -862,6 +862,55 @@ This handles both formats (string and list) transparently, so the LLM's grouping
 
 ---
 
+## Session 5 closure — cross-session consistency fixes
+
+### DEV-38 — Missing `WriteExecutionReport` action class (Session 1 gap)
+
+**Discovered during:** Session 5 cross-session consistency audit.
+
+**Problem:**
+Session 1 created 4 action classes corresponding to the 4 inter-agent handoffs:
+- WriteBRD → triggers Agent 2
+- WriteDataModel → triggers Agent 3
+- WriteExecutionPlan → triggers Agent 4
+- WriteValidationReport → Agent 5 → may re-trigger Agent 4
+
+The 5th handoff — Agent 4 (Alex) → Agent 5 (Edward) — was missing an action class. Without `WriteExecutionReport`, BIAnalyticsEngineer has no `cause_by` type to publish on its execution report message, and BIQAEngineer has nothing to `_watch([...])` for. The Agent 4 → 5 handoff would be silently broken.
+
+**Implementation:**
+Created `metagpt/actions/bi/write_execution_report.py` — a simple marker `Action` subclass with `name = "WriteExecutionReport"`. No `run()` method or PROMPT_TEMPLATE needed: BIAnalyticsEngineer writes the execution report directly using Editor (the LLM composes it from its ReAct loop context) and then calls `publish_execution_report()` on the role class. The action class serves only as the `cause_by` message routing type.
+
+Additionally, `bi_analytics_engineer.py` prompt (Step 3) updated to instruct Alex to call `BIAnalyticsEngineer.publish_execution_report()` after saving the report.
+
+**Files created:** `metagpt/actions/bi/write_execution_report.py`
+**Files changed:** `metagpt/prompts/bi/bi_analytics_engineer.py` (Step 3 + On receiving Validation Feedback Report section)
+
+---
+
+### DEV-39 — Multiple DEV-24 non-compliance fixes across BI agent prompt files (Session 5 closure audit)
+
+**Discovered during:** Session 5 cross-session consistency audit.
+
+**Background:**
+DEV-24 (Session 3) established that all tool calls in BI agent prompt files must use fully-qualified `ClassName.method_name` format (e.g. `RoleZero.ask_human`, not `ask_human`). DEV-24 was applied to `bi_requirements_analyst.py` and a note was added: "must be applied to all BI agent prompt files in Sessions 4–7." However, several files still had bare (unqualified) method names.
+
+**Issues found and fixed:**
+
+| File | Occurrence | Before | After |
+|------|-----------|--------|-------|
+| `bi_analytics_engineer.py` | All INSTANTIATION/CONNECTION_SETUP/SCHEMA_CREATION/DATA_INGESTION task dispatch instructions (×4) | `Call execute_BI_task(task)` | `Call BIAnalyticsEngineer.execute_BI_task(task)` |
+| `bi_analytics_engineer.py` | TRANSFORMATION task dispatch instruction (×2) | `calling execute_BI_task` / `call execute_BI_task(task)` | `calling BIAnalyticsEngineer.execute_BI_task` / `call BIAnalyticsEngineer.execute_BI_task(task)` |
+| `bi_qa_engineer.py` | Phase 3 report generation instruction | `Call generate_validation_report(...)` | `Call BIQAEngineer.generate_validation_report(...)` |
+| `bi_solution_architect.py` | CREDENTIAL_REQUEST task type description | `use reply_to_human to ask the user` | `use RoleZero.ask_human to ask the user` |
+| `bi_data_modeler.py` | Core tools section | `Editor: For the creation and saving of the three output artifacts as files.` | `BIDataModeler.generate_data_model(): For writing and saving the three output artifacts to the project docs folder.` |
+
+**Why the unqualified names cause failure:**
+RoleZero's command dispatcher looks up commands by `"ClassName.method_name"` key in `tool_execution_map`. A bare `"execute_BI_task"` key is not registered — only `"BIAnalyticsEngineer.execute_BI_task"` is. When the LLM outputs the bare name, the dispatcher raises `Command execute_BI_task not found`, causing the LLM to produce malformed retry output and potentially crashing the run (DEV-26 guard notwithstanding).
+
+**Files changed:** `metagpt/prompts/bi/bi_analytics_engineer.py`, `metagpt/prompts/bi/bi_qa_engineer.py`, `metagpt/prompts/bi/bi_solution_architect.py`, `metagpt/prompts/bi/bi_data_modeler.py`
+
+---
+
 ## Session 6 deviations
 
 *(To be filled in during Session 6)*

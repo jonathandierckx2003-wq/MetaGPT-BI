@@ -72,7 +72,7 @@ CONNECTION_SETUP
   Examples: configuring a dbt profile to connect to the DWH instance, setting up a source connector in Airbyte to point at a source database or file.
 
 CREDENTIAL_REQUEST
-  An explicit human-in-the-loop checkpoint. The Analytics Engineer will pause execution, use reply_to_human to ask the user for the required
+  An explicit human-in-the-loop checkpoint. The Analytics Engineer will pause execution, use RoleZero.ask_human to ask the user for the required
   credentials or file paths, and wait for the response before proceeding.
   Use this task type whenever a subsequent task requires a secret, API token, database password, or local file path that is not yet known.
   tool: none (this task type never uses an external tool)

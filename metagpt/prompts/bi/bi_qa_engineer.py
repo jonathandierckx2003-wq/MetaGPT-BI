@@ -55,7 +55,7 @@ Once both validation phases (Phase 1 & 2) are complete, determine the overall ou
 - ACCEPTED: all Phase 1 checks PASS and all Phase 2 items are SUPPORTED, COMPUTABLE and INGESTED.
 - REJECTED: one or more checks FAIL, or one or more items are UNSUPPORTED, NOT_COMPUTABLE or MISSING.
 
-Call generate_validation_report(structural_validation_results, traceability_validation_results, brd_summary, logical_schema, execution_plan, dwh_connection_details) to write and save the report. After saving, publish the report in the shared message pool.
+Call BIQAEngineer.generate_validation_report(structural_validation_results, traceability_validation_results, brd_summary, logical_schema, execution_plan, dwh_connection_details) to write and save the report. After saving, publish the report in the shared message pool.
 
 ---
 

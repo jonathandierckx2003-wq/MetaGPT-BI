@@ -63,7 +63,10 @@ Four Action classes. Each:
 | `write_brd.py` | `WriteBRD` | Agent 1 when Phase 1 (elicitation) is complete | `docs/business_requirement_document.md` |
 | `write_data_model.py` | `WriteDataModel` | Agent 2 when BRD message observed | `docs/dimensional_model_specification.md`, `docs/conceptual_schema.mermaid`, `docs/logical_schema.mermaid` |
 | `write_execution_plan.py` | `WriteExecutionPlan` | Agent 3 when WriteDataModel output observed | `docs/execution_plan.json` |
+| `write_execution_report.py` | `WriteExecutionReport` | Agent 4 when all execution tasks are complete | `docs/execution_report.md` |
 | `write_validation_report.py` | `WriteValidationReport` | Agent 5 after both validation phases complete | `docs/validation_feedback_report.md` |
+
+*(Note: `WriteExecutionReport` was a Session 1 gap identified during the Session 5 cross-session audit and backfilled — see DEV-38.)*
 
 **How action-level prompts integrate with RoleZero's ReAct loop:**
 Each agent has a `@register_tool`-decorated method on its role class (e.g. `generate_brd()` on BIRequirementsAnalyst) that:
@@ -513,8 +516,12 @@ The two SCHEMA_CREATION tasks set `tool_args.ddl` to a JSON **array** of DDL str
 
 | Area | Impact |
 |------|--------|
-| `metagpt/prompts/bi/bi_solution_architect.py` (Session 1) | **Changed** — Core tools + output format sections updated to `BISolutionArchitect.generate_execution_plan()` (DEV-30). MANDATORY guard added (DEV-33 pattern). |
+| `metagpt/prompts/bi/bi_solution_architect.py` (Session 1) | **Changed** — Core tools + output format sections updated to `BISolutionArchitect.generate_execution_plan()` (DEV-30). MANDATORY guard added (DEV-33 pattern). CREDENTIAL_REQUEST description: `reply_to_human` → `RoleZero.ask_human` (DEV-39). |
 | `metagpt/actions/bi/write_execution_plan.py` (Session 1) | **Changed** (DEV-36) — PROMPT_TEMPLATE strengthened with explicit JSON schema example + tool name list; `_validate_plan()` now checks required fields and non-null `tool` for non-CREDENTIAL_REQUEST tasks. |
+| `metagpt/actions/bi/write_execution_report.py` (Session 1 gap) | **Created** (DEV-38) — Marker action class so Agent 4→5 handoff has a `cause_by` message type. |
+| `metagpt/prompts/bi/bi_analytics_engineer.py` (Session 1) | **Changed** (DEV-38 + DEV-39) — All `execute_BI_task(task)` calls qualified to `BIAnalyticsEngineer.execute_BI_task(task)`; Step 3 updated to call `BIAnalyticsEngineer.publish_execution_report()` after saving report; MANDATORY guard added for report + publish. |
+| `metagpt/prompts/bi/bi_qa_engineer.py` (Session 1) | **Changed** (DEV-39) — `generate_validation_report(...)` qualified to `BIQAEngineer.generate_validation_report(...)`. |
+| `metagpt/prompts/bi/bi_data_modeler.py` (Session 1) | **Changed** (DEV-39) — Core tools: `Editor` → `BIDataModeler.generate_data_model()` for consistency with DEV-34 pattern. |
 | All Session 2 tool classes | No impact. |
 | All Session 3 framework fixes and role | No impact. |
 | `metagpt/roles/bi/bi_data_modeler.py` (Session 4) | No impact. |

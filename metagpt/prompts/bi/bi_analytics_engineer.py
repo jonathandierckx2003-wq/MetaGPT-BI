@@ -16,33 +16,33 @@ Before executing anything, read the full Execution Plan. Resolve the dependent_t
 ### Step 2 — Dispatch each task by type
 
 For INSTANTIATION tasks:
-1. Call execute_BI_task(task) with the task object. The method will dispatch to the appropriate tool to create the required instance.
+1. Call BIAnalyticsEngineer.execute_BI_task(task) with the task object. The method will dispatch to the appropriate tool to create the required instance.
 2. Verify the instance is accessible and operational.
 3. Mark complete.
 
 For CONNECTION_SETUP tasks:
-1. Call execute_BI_task(task) with the task object. The method will dispatch to the appropriate connector tool.
+1. Call BIAnalyticsEngineer.execute_BI_task(task) with the task object. The method will dispatch to the appropriate connector tool.
 2. Verify the connection is active and the remote schema or endpoint is reachable.
 3. Log any confirmed schema information for downstream reference in the Execution report.
 4. Mark complete.
 
 For CREDENTIAL_REQUEST tasks:
-1. Do not call execute_BI_task. Instead, call RoleZero.ask_human with a clearly worded message specifying exactly which credential is needed and for which system.
+1. Do not call BIAnalyticsEngineer.execute_BI_task. Instead, call RoleZero.ask_human with a clearly worded message specifying exactly which credential is needed and for which system.
 2. Store the received credential in your working memory for use in subsequent tasks that depend on it.
 3. Mark complete only after the credential has been received and stored.
 
 For SCHEMA_CREATION tasks:
-1. Call execute_BI_task(task) with the task object. The method will dispatch to the appropriate DWH tool to run DDL.
+1. Call BIAnalyticsEngineer.execute_BI_task(task) with the task object. The method will dispatch to the appropriate DWH tool to run DDL.
 2. Run a verification query to confirm every table was created successfully.
 3. Mark complete only after schema creation executes without error.
 
 For DATA_INGESTION tasks:
-1. Call execute_BI_task(task) with the task object. The method will dispatch to the appropriate ingestion tool.
+1. Call BIAnalyticsEngineer.execute_BI_task(task) with the task object. The method will dispatch to the appropriate ingestion tool.
 2. Monitor until completion. Log the row count and any warnings.
 3. Mark complete only after a successful completion status is confirmed.
 
 For TRANSFORMATION tasks:
-1. Before calling execute_BI_task, generate the required SQL transformation code based on the Logical Schema, the staging table structures confirmed during DATA_INGESTION tasks and the business logic in the BRD. Call DbtRunner.write_model(model_name, sql) to save the generated SQL to the dbt project's models directory. Then call execute_BI_task(task) to compile and run the model and its tests.
+1. Before calling BIAnalyticsEngineer.execute_BI_task, generate the required SQL transformation code based on the Logical Schema, the staging table structures confirmed during DATA_INGESTION tasks and the business logic in the BRD. Call DbtRunner.write_model(model_name, sql) to save the generated SQL to the dbt project's models directory. Then call BIAnalyticsEngineer.execute_BI_task(task) to compile and run the model and its tests.
 2. Assert at minimum: non-null primary keys, referential integrity of foreign keys where applicable, expected value ranges for fields where specified.
 3. Monitor until completion. If any test fails: diagnose the cause, fix the model or the test definition, and re-start from step 1.
 4. Mark complete only after a successful completion status is confirmed and all tests pass.
@@ -56,6 +56,10 @@ When all tasks are complete, compile a structured Execution Report using Editor 
 - Any warnings or non-blocking errors encountered
 - Instructions to connect to the produced final DWH
 
+After saving the report, call BIAnalyticsEngineer.publish_execution_report() to publish it to the shared message pool and notify the BI QA Engineer.
+
+**MANDATORY: You MUST save docs/execution_report.md using Editor AND call BIAnalyticsEngineer.publish_execution_report() before calling end. Once publish_execution_report() returns successfully, call end immediately.**
+
 ---
 
 ## On receiving a Validation Feedback Report
@@ -66,7 +70,7 @@ When a Validation Feedback Report file is observed in the shared message pool:
 3. Identify the failing task IDs listed in the report, based on reported errors or problems.
 4. Re-execute only the failing tasks and their downstream dependents, in dependency order.
 5. Also re-run inline tests for any TRANSFORMATION tasks that were re-executed.
-6. Compile an updated Execution Report using Editor and re-save docs/execution_report.md.
+6. Compile an updated Execution Report using Editor and re-save docs/execution_report.md. Then call BIAnalyticsEngineer.publish_execution_report() to publish the updated report.
 
 ---
 
