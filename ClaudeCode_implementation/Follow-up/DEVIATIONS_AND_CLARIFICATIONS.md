@@ -785,6 +785,39 @@ Consistent with the Agent 1 and Agent 2 pattern (BIRequirementsAnalyst, BIDataMo
 
 ---
 
+### DEV-36 — WriteExecutionPlan PROMPT_TEMPLATE strengthened with explicit schema example + tool name list; _validate_plan() checks required fields; graceful error return in generate_execution_plan()
+
+**Discovered during:** Session 5 live test.
+
+**Problem:**
+The first live test run produced a plan with wrong field names: `title` instead of `instruction`, `description` instead of (not needed), `dependencies` instead of `dependent_task_ids`, and `tooling` (list) instead of `tool` (string) + `tool_args` (dict). The LLM relied on the role-level instruction to recall the schema, but apparently did not fully recall the exact field names during the action-level LLM call inside `WriteExecutionPlan.run()`.
+
+Additionally, `_validate_plan()` only checked `task_type` values — it did not catch the missing required fields, so the validator passed the malformed plan without error.
+
+**Implementation:**
+
+Three changes:
+
+1. **`metagpt/actions/bi/write_execution_plan.py` — PROMPT_TEMPLATE:**
+   - Added a `## Required JSON schema — exact field names` section with two concrete example tasks showing the exact field names, and a list of valid tool names (`DuckDBExecutor`, `PandasLoader`, `DbtRunner`, `SupabaseConnector`, `AirbyteConnector`) to use in the `tool` field.
+   - Added a `CRITICAL` warning at the end: "Use EXACT field names shown above — task_id, dependent_task_ids, instruction, task_type, tool, tool_args. Every task except CREDENTIAL_REQUEST must have a specific tool name and concrete tool_args."
+
+2. **`metagpt/actions/bi/write_execution_plan.py` — `_validate_plan()`:**
+   - Now checks for required fields (`task_id`, `dependent_task_ids`, `instruction`, `task_type`) on every task.
+   - Checks that non-CREDENTIAL_REQUEST tasks have a non-null `tool` field.
+   - Accumulates all errors and raises a single `ValueError` with all violations listed.
+   - Log message updated: "validated N tasks, all required fields and task_types are valid."
+
+3. **`metagpt/roles/bi/bi_solution_architect.py` — `generate_execution_plan()`:**
+   - Wrapped `WriteExecutionPlan.run()` in `try/except ValueError`.
+   - On validation failure, returns a descriptive error string (not a crash), so the LLM can see what went wrong and retry `generate_execution_plan()`.
+
+**Live test re-run after fix:** 13 tasks, all with correct field names, valid task_types, and specific tool names (DuckDBExecutor × 2, PandasLoader × 3, DbtRunner × 8). Validation passed.
+
+**Files changed:** `metagpt/actions/bi/write_execution_plan.py`, `metagpt/roles/bi/bi_solution_architect.py`, `ClaudeCode_implementation/tests/run_session5_live.py` (Unicode fix)
+
+---
+
 ## Session 6 deviations
 
 *(To be filled in during Session 6)*

@@ -160,7 +160,7 @@ async def main():
         try:
             with open(output_path, encoding="utf-8") as f:
                 tasks = json.load(f)
-            print(f"  ✓ Valid JSON with {len(tasks)} tasks")
+            print(f"  [OK] Valid JSON with {len(tasks)} tasks")
 
             # Check all tasks have required fields
             required_fields = {"task_id", "dependent_task_ids", "instruction", "task_type"}

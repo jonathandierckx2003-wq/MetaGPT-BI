@@ -122,9 +122,9 @@ async def main():
     for path in expected_files:
         if path.exists():
             size = path.stat().st_size
-            print(f"  ✓ {path}  ({size} bytes)")
+            print(f"  [OK] {path}  ({size} bytes)")
         else:
-            print(f"  ✗ MISSING: {path}")
+            print(f"  [MISSING] MISSING: {path}")
             all_ok = False
 
     # Also report SVG renderings if present
@@ -134,7 +134,7 @@ async def main():
     ]:
         if svg_path.exists():
             size = svg_path.stat().st_size
-            print(f"  ✓ {svg_path}  ({size} bytes)  [rendered]")
+            print(f"  [OK] {svg_path}  ({size} bytes)  [rendered]")
 
     if not all_ok:
         print()

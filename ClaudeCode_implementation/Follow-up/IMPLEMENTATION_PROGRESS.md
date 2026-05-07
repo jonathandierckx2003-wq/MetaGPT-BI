@@ -16,7 +16,7 @@ A transposition of the MetaGPT Software Company multi-agent system into the Busi
 | 2 | 6 tool classes (DuckDBExecutor, DbtRunner, PandasLoader, AirbyteConnector, SupabaseConnector, DataSourceInspector) | ✅ Complete |
 | 3 | BIRequirementsAnalyst (Agent 1) + standalone test + live e2e test | ✅ Complete |
 | 4 | BIDataModeler (Agent 2) + standalone test + live e2e test | ✅ Complete |
-| 5 | BISolutionArchitect (Agent 3) + standalone test | ✅ Complete (live test pending — requires LLM) |
+| 5 | BISolutionArchitect (Agent 3) + standalone test + live e2e test | ✅ Complete |
 | 6 | BIAnalyticsEngineer (Agent 4) + standalone test | ⏳ Pending |
 | 7 | BIQAEngineer (Agent 5) + bi_team.py + end-to-end test | ⏳ Pending |
 
@@ -483,12 +483,35 @@ Two changes applying DEV-30 and DEV-33:
 - `TestGenerateExecutionPlan`: saves file with correct path/extension, publishes message with `cause_by=WriteExecutionPlan` and `sent_from="Eve"`, returns confirmation with artifact path, error handling when no BRD in memory, error handling when no data model in memory, `WriteExecutionPlan.run()` called with correctly extracted spec and logical schema sections, published message content matches plan JSON
 - `TestExtractSection`: heading stripping correct for spec, logical, and edge case (no double-newline)
 
+### Bugs found and fixed during live testing
+
+| Bug | Fix | DEV |
+|-----|-----|-----|
+| LLM used wrong field names: `title`, `description`, `dependencies`, `tooling` instead of `instruction`, `dependent_task_ids`, `tool`, `tool_args` | Explicit JSON schema example + tool name list added to PROMPT_TEMPLATE; `_validate_plan()` strengthened; graceful error return in `generate_execution_plan()` | DEV-36 |
+| Test script crashed with `UnicodeEncodeError` on `✓`/`✗` in Windows console (cp1252) | Replaced Unicode symbols with ASCII `[OK]`/`[MISSING]` | DEV-36 |
+
+**What was verified working (confirmed re-run after DEV-36 fix):**
+- ✅ `BISolutionArchitect.generate_execution_plan()` called in round 1
+- ✅ `WriteExecutionPlan.run()` LLM call succeeded; plan parsed and validated
+- ✅ 13 tasks, all with correct field names: `task_id`, `dependent_task_ids`, `instruction`, `task_type`, `tool`, `tool_args`
+- ✅ Tool names are specific: `DuckDBExecutor` × 2, `PandasLoader` × 3, `DbtRunner` × 8
+- ✅ `_validate_plan()` logs "validated 13 tasks, all required fields and task_types are valid."
+- ✅ File saved to `workspace/docs/execution_plan.json` (11,081 bytes)
+- ✅ Message published with `cause_by=WriteExecutionPlan` to trigger BIAnalyticsEngineer
+- ✅ Eve's `reply_to_human` completion notice printed to terminal
+
+**Execution plan quality:**
+- INSTANTIATION: DuckDB file initialized
+- SCHEMA_CREATION: staging tables for 3 CSV sources via DDL
+- DATA_INGESTION × 3: PandasLoader loads each CSV into staging
+- TRANSFORMATION × 8: DbtRunner models for DIM_CATEGORY, DIM_PRODUCT, DIM_CUSTOMER, DIM_INTERACTION_TYPE, DIM_DATE, FACT_INTERACTION, FACT_SALES, FACT_CUSTOMER_SUMMARY — each with inline SQL in `tool_args`
+
 ### Cross-session impact of Session 5
 
 | Area | Impact |
 |------|--------|
 | `metagpt/prompts/bi/bi_solution_architect.py` (Session 1) | **Changed** — Core tools + output format sections updated to `BISolutionArchitect.generate_execution_plan()` (DEV-30). MANDATORY guard added (DEV-33 pattern). |
-| `metagpt/actions/bi/write_execution_plan.py` (Session 1) | **No change** — `run(brd_content, dimensional_model_specification, logical_schema)` signature kept as-is; called internally by `generate_execution_plan()`. |
+| `metagpt/actions/bi/write_execution_plan.py` (Session 1) | **Changed** (DEV-36) — PROMPT_TEMPLATE strengthened with explicit JSON schema example + tool name list; `_validate_plan()` now checks required fields and non-null `tool` for non-CREDENTIAL_REQUEST tasks. |
 | All Session 2 tool classes | No impact. |
 | All Session 3 framework fixes and role | No impact. |
 | `metagpt/roles/bi/bi_data_modeler.py` (Session 4) | No impact. |
