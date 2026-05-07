@@ -493,18 +493,21 @@ Two changes applying DEV-30 and DEV-33:
 **What was verified working (confirmed re-run after DEV-36 fix):**
 - ✅ `BISolutionArchitect.generate_execution_plan()` called in round 1
 - ✅ `WriteExecutionPlan.run()` LLM call succeeded; plan parsed and validated
-- ✅ 13 tasks, all with correct field names: `task_id`, `dependent_task_ids`, `instruction`, `task_type`, `tool`, `tool_args`
-- ✅ Tool names are specific: `DuckDBExecutor` × 2, `PandasLoader` × 3, `DbtRunner` × 8
-- ✅ `_validate_plan()` logs "validated 13 tasks, all required fields and task_types are valid."
-- ✅ File saved to `workspace/docs/execution_plan.json` (11,081 bytes)
+- ✅ 14 tasks, all with correct field names: `task_id`, `dependent_task_ids`, `instruction`, `task_type`, `tool`, `tool_args`
+- ✅ Tool names are specific: `DuckDBExecutor` × 3, `PandasLoader` × 3, `DbtRunner` × 8
+- ✅ `_validate_plan()` logs "validated 14 tasks, all required fields and task_types are valid."
+- ✅ File saved to `workspace/docs/execution_plan.json` (9,106 bytes)
 - ✅ Message published with `cause_by=WriteExecutionPlan` to trigger BIAnalyticsEngineer
 - ✅ Eve's `reply_to_human` completion notice printed to terminal
 
 **Execution plan quality:**
-- INSTANTIATION: DuckDB file initialized
-- SCHEMA_CREATION: staging tables for 3 CSV sources via DDL
+- INSTANTIATION × 1: DuckDB file initialized (`DuckDBExecutor.connect`)
+- SCHEMA_CREATION × 2: task 2 creates all 3 staging tables; task 6 creates all 8 dimensional/fact tables — both use `DuckDBExecutor`
 - DATA_INGESTION × 3: PandasLoader loads each CSV into staging
-- TRANSFORMATION × 8: DbtRunner models for DIM_CATEGORY, DIM_PRODUCT, DIM_CUSTOMER, DIM_INTERACTION_TYPE, DIM_DATE, FACT_INTERACTION, FACT_SALES, FACT_CUSTOMER_SUMMARY — each with inline SQL in `tool_args`
+- TRANSFORMATION × 8: DbtRunner models for DIM_DATE, DIM_CATEGORY, DIM_PRODUCT, DIM_CUSTOMER, DIM_INTERACTION_TYPE, FACT_INTERACTION, FACT_SALES, FACT_CUSTOMER_SUMMARY
+
+**Forward concern (pre-logged as DEV-37):**
+The two SCHEMA_CREATION tasks set `tool_args.ddl` to a JSON **array** of DDL strings (one per table) rather than a single string. `DuckDBExecutor.run_ddl(ddl)` expects a string. Session 6's `execute_BI_task` dispatch must detect and join ddl arrays before calling `run_ddl()`.
 
 ### Cross-session impact of Session 5
 

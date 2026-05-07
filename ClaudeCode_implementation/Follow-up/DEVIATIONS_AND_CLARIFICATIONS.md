@@ -812,9 +812,53 @@ Three changes:
    - Wrapped `WriteExecutionPlan.run()` in `try/except ValueError`.
    - On validation failure, returns a descriptive error string (not a crash), so the LLM can see what went wrong and retry `generate_execution_plan()`.
 
-**Live test re-run after fix:** 13 tasks, all with correct field names, valid task_types, and specific tool names (DuckDBExecutor × 2, PandasLoader × 3, DbtRunner × 8). Validation passed.
+**Live test re-run after fix:** 14 tasks, all with correct field names, valid task_types, and specific tool names (DuckDBExecutor × 3, PandasLoader × 3, DbtRunner × 8). Validation passed.
 
 **Files changed:** `metagpt/actions/bi/write_execution_plan.py`, `metagpt/roles/bi/bi_solution_architect.py`, `ClaudeCode_implementation/tests/run_session5_live.py` (Unicode fix)
+
+---
+
+## Session 5 → Session 6 pre-logged concern
+
+### DEV-37 — `tool_args.ddl` in SCHEMA_CREATION tasks is a JSON array, not a string (pre-logged for Session 6)
+
+**Discovered during:** Session 5 live test re-run (2026-05-07).
+
+**Observation:**
+The LLM-generated execution plan (14 tasks) structures both SCHEMA_CREATION tasks with `tool_args.ddl` as a JSON array of DDL strings — one string per table — rather than a single concatenated DDL string:
+
+```json
+{
+  "task_id": "2",
+  "task_type": "SCHEMA_CREATION",
+  "tool": "DuckDBExecutor",
+  "tool_args": {
+    "db_path": "workspace/dwh.duckdb",
+    "ddl": [
+      "CREATE TABLE IF NOT EXISTS staging_interaction_raw (...);",
+      "CREATE TABLE IF NOT EXISTS staging_customer_raw (...);",
+      "CREATE TABLE IF NOT EXISTS staging_product_raw (...);"
+    ]
+  }
+}
+```
+
+**Problem:**
+`DuckDBExecutor.run_ddl(ddl: str)` expects a single SQL string. Passing a list will cause a DuckDB API error at runtime.
+
+**`_validate_plan()` impact:**
+The validator does not inspect `tool_args` structure — it only checks `task_id`, `dependent_task_ids`, `instruction`, `task_type` presence and `tool` non-nullness. The array passes validation silently.
+
+**Planned fix (to implement in Session 6 — `_run_duckdb` in `execute_BI_task`):**
+When dispatching DuckDBExecutor SCHEMA_CREATION tasks, check the type of `ddl`:
+```python
+ddl = tool_args.get("ddl") or tool_args.get("sql") or ""
+if isinstance(ddl, list):
+    ddl = "\n".join(ddl)
+```
+This handles both formats (string and list) transparently, so the LLM's grouping behaviour does not break execution.
+
+**Files to change in Session 6:** `metagpt/roles/bi/bi_analytics_engineer.py` (`_run_duckdb` helper)
 
 ---
 
