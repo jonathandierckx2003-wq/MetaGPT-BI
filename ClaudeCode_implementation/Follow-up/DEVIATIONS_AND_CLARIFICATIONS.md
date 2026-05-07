@@ -427,6 +427,162 @@ The `ask_human` and `reply_to_human` overrides on `BIRequirementsAnalyst` (DEV-1
 
 ---
 
+### DEV-21 — External tool class methods must be manually wired into `tool_execution_map` in `_update_tool_execution`
+
+**Theoretical design / prior assumption:**  
+Registering a class with `@register_tool` was assumed to make its methods callable from the RoleZero ReAct loop.
+
+**Problem discovered during live test (Session 3):**  
+`TOOL_REGISTRY` only stores LLM-readable schemas (docstrings, parameter names) for use by `BM25ToolRecommender`. The actual callable methods must separately be wired into `tool_execution_map`, which is what the RoleZero dispatcher uses at runtime. Without wiring, the dispatcher raises `Command DataSourceInspector.inspect_csv not found`.
+
+**Implementation:**  
+Each BI role class must override `_update_tool_execution()` and populate `self.tool_execution_map` with every external tool method it needs. For classes that require instantiation (e.g. `DataSourceInspector`, `DuckDBExecutor`), the instance is created inside `_update_tool_execution` and its bound methods are added.
+
+**Pattern (applies to all 5 BI agents):**
+```python
+def _update_tool_execution(self):
+    inspector = DataSourceInspector()
+    self.tool_execution_map.update({
+        "BIRequirementsAnalyst.generate_brd": self.generate_brd,
+        "DataSourceInspector.inspect_csv": inspector.inspect_csv,
+        ...
+    })
+```
+
+**Files changed:** `metagpt/roles/bi/bi_requirements_analyst.py` (and all subsequent BI role files in Sessions 4–7)
+
+---
+
+### DEV-22 — `_quick_think` overridden in BIRequirementsAnalyst to always return `(None, "TASK")`
+
+**Theoretical design:**  
+Not specified. Assumed default RoleZero `_quick_think` behaviour was appropriate.
+
+**Problem discovered during live test (Session 3):**  
+RoleZero's `_quick_think` uses an LLM call to classify the user's intent as QUICK, AMBIGUOUS, TASK, or SEARCH. On the initial BI project request, the LLM sometimes classifies it as AMBIGUOUS — which short-circuits the full ReAct loop via `if quick_rsp: return quick_rsp`, causing Alice to call `reply_to_human` once with a clarifying note and then go idle instead of entering the structured elicitation loop.
+
+**Implementation:**  
+`_quick_think` is overridden to unconditionally return `(None, "TASK")`:
+```python
+async def _quick_think(self):
+    return None, "TASK"
+```
+This forces every invocation into the full think-act cycle, which is the correct behaviour for a multi-turn structured elicitation agent.
+
+**Files changed:** `metagpt/roles/bi/bi_requirements_analyst.py`
+
+---
+
+### DEV-23 — `DataSourceInspector.inspect_csv` truncates sample strings and skips entirely-null columns
+
+**Theoretical design:**  
+Not specified at this level of detail.
+
+**Problem discovered during live test (Session 3):**  
+`product_details.csv` contains 27 columns, many with verbose text (full product descriptions, Amazon URLs). The raw `inspect_csv` output for this file was ~5,000 tokens, pushing the total per-request context above Groq's 12k free-tier limit. Entirely-null columns (e.g. `Upc Ean Code` with 9,968/10,002 nulls) contributed sample values of `['nan', 'nan', ...]` with no useful schema information.
+
+**Implementation:**  
+Two changes to `inspect_csv` in `metagpt/tools/bi/data_source_inspector.py`:
+1. Skip columns where `null_count == len(full_df)` (entirely null — no schema value)
+2. Truncate each sample string to 60 characters before adding to the output
+
+**Why:**  
+Keeps the schema summary compact enough to stay within context limits without losing any information that matters for BRD writing. Product descriptions and image URLs at full length add no value for requirements analysis.
+
+**Files changed:** `metagpt/tools/bi/data_source_inspector.py`
+
+---
+
+### DEV-24 — All tool call references in BI agent prompts must use `ClassName.method_name` format
+
+**Theoretical design / original prompts:**  
+Phase 1 of `bi_requirements_analyst.py` said `using ask_human` (bare method name). Phase 2 said `Call generate_brd(...)` (bare method name).
+
+**Problem discovered during live test (Session 3):**  
+The RoleZero command dispatcher looks up commands by key in `tool_execution_map`. Keys are registered as `"ClassName.method_name"` (e.g. `"RoleZero.ask_human"`, `"BIRequirementsAnalyst.generate_brd"`). When the LLM outputs `"command_name": "ask_human"` (bare name), the key is not found and the dispatcher raises `Command ask_human not found`. The LLM then tries alternative JSON formats, producing malformed output that crashes the parser with `KeyError: 'command_name'`.
+
+**Implementation:**  
+All tool call references in every BI agent prompt file updated to use the fully-qualified `ClassName.method_name` format. For `bi_requirements_analyst.py`:
+- `using ask_human` → `using RoleZero.ask_human`
+- `Call generate_brd(...)` → `Call BIRequirementsAnalyst.generate_brd(...)`
+
+**Files changed:** `metagpt/prompts/bi/bi_requirements_analyst.py` (and must be applied to all BI agent prompt files in Sessions 4–7)
+
+---
+
+### DEV-25 — `max_completion_tokens` required for gpt-5.x and newer OpenAI models
+
+**Theoretical design / prior assumption:**  
+MetaGPT's OpenAI provider uses `max_tokens` for all models. This was assumed to work for any OpenAI model.
+
+**Problem discovered during live test (Session 3):**  
+GPT-5.x models (and other newer OpenAI models including o3/o4 series) reject the `max_tokens` parameter with:
+```
+openai.BadRequestError: 400 - 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.
+```
+MetaGPT's `_cons_kwargs` in `openai_api.py` only had a special case for `o1-` models (which pops `max_tokens`), not for `gpt-5.x`.
+
+**Implementation:**  
+Added an `elif` branch in `_cons_kwargs` after the existing `o1-` check:
+```python
+elif "gpt-5" in self.model or "o3" in self.model or "o4" in self.model:
+    kwargs["max_completion_tokens"] = kwargs.pop("max_tokens")
+```
+
+**Why:**  
+OpenAI's newer model API contracts use `max_completion_tokens` to account for reasoning tokens. This fix is forward-compatible: as more model families adopt this parameter, they can be added to the condition. The existing `o1-` case behaviour (dropping max_tokens without substitution) is preserved.
+
+**Files changed:** `metagpt/provider/openai_api.py`
+
+---
+
+### DEV-26 — `parse_commands` hardened against commands missing `command_name` key
+
+**Theoretical design / prior assumption:**  
+The JSON repair function in `parse_commands` was assumed to always produce valid command structures.
+
+**Problem discovered during live test (Session 3):**  
+When gpt-5.4-mini occasionally outputs plain text instead of a JSON command block (intermittent), `parse_code` fails to extract a JSON block, falls through to the repair LLM call, and the repair LLM produces a JSON object describing the content (e.g. `{"message": "...", "formatted_json": {...}}`) rather than a command list. This dict has no `command_name` key, so the subsequent list comprehension at line 137 of `role_zero_utils.py` crashes with `KeyError: 'command_name'`.
+
+**Implementation:**  
+Added a guard after the existing `isinstance(commands, dict)` normalisation in `parse_commands`:
+```python
+valid = [cmd for cmd in commands if isinstance(cmd, dict) and "command_name" in cmd]
+if not valid:
+    return (
+        "Your last response was not formatted as a JSON command block. "
+        'You must always respond with a JSON list of commands, e.g.: '
+        '[{"command_name": "RoleZero.ask_human", "args": {"question": "..."}}]',
+        False,
+        command_rsp,
+    )
+commands = valid
+```
+When `ok=False` is returned, `_act` adds the error message to memory as a `UserMessage`, and the LLM sees it on the next round and self-corrects to proper JSON format.
+
+**Files changed:** `metagpt/utils/role_zero_utils.py`
+
+---
+
+### DEV-27 — MetaGPT's Editor writes to `workspace/` subdirectory, not the current working directory
+
+**Theoretical design / prior assumption:**  
+`self.editor.write(path="docs/file.md", content=...)` was assumed to write directly to `<repo_root>/docs/file.md`.
+
+**Discovered during live test (Session 3):**  
+The BRD file was logged as saved to `docs\business_requirement_document.md` but was not found there. It was actually written to `workspace\docs\business_requirement_document.md`. MetaGPT's Editor class resolves relative paths under a `workspace/` directory that it creates and manages automatically.
+
+**Implementation:**  
+- Removed the explicit `brd_path.parent.mkdir(parents=True, exist_ok=True)` call from `generate_brd()` — Editor manages directory creation inside workspace/ itself. Adding `mkdir` creates a spurious `docs/` folder in the repo root.
+- Updated the test runner file-existence check to look in `workspace/docs/` first, then fall back to `docs/`.
+
+**Impact on future sessions:**  
+All BI agents' `generate_*()` methods (Sessions 4–7) must NOT call `Path(...).mkdir()` before `editor.write()`. The Editor handles workspace directory creation. Final artifact paths will be `workspace/docs/<filename>` for all agents.
+
+**Files changed:** `metagpt/roles/bi/bi_requirements_analyst.py`, `ClaudeCode_implementation/tests/run_session3_live.py`
+
+---
+
 ## Session 4 deviations
 
 *(To be filled in during Session 4)*

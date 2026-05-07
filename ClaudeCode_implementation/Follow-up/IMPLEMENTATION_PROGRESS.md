@@ -14,7 +14,7 @@ A transposition of the MetaGPT Software Company multi-agent system into the Busi
 |---------|-------|--------|
 | 1 | BITaskType enum + 5 prompt files + 4 action classes | ✅ Complete |
 | 2 | 6 tool classes (DuckDBExecutor, DbtRunner, PandasLoader, AirbyteConnector, SupabaseConnector, DataSourceInspector) | ✅ Complete |
-| 3 | BIRequirementsAnalyst (Agent 1) + standalone test | ✅ Complete |
+| 3 | BIRequirementsAnalyst (Agent 1) + standalone test + live e2e test | ✅ Complete |
 | 4 | BIDataModeler (Agent 2) + standalone test | ⏳ Pending |
 | 5 | BISolutionArchitect (Agent 3) + standalone test | ⏳ Pending |
 | 6 | BIAnalyticsEngineer (Agent 4) + standalone test | ⏳ Pending |
@@ -252,11 +252,12 @@ Empty package marker for the new `metagpt/roles/bi/` directory.
 
 ### Live integration test
 
-**Test file:** `ClaudeCode_implementation/tests/run_session3_live.py`
+**Test file:** `ClaudeCode_implementation/tests/run_session3_live.py`  
+**LLM used:** OpenAI gpt-5.4-mini (`config/config2.yaml`)
 
-**Status:** Phase 1 verified complete. Phase 2 not yet reached due to free-tier token limits.
+**Status:** ✅ FULLY COMPLETE — Phase 1 and Phase 2 both verified end-to-end.
 
-**Bugs found and fixed during live testing:**
+**Bugs found and fixed during live testing (across two test sessions):**
 
 | Bug | Fix | DEV |
 |-----|-----|-----|
@@ -264,16 +265,25 @@ Empty package marker for the new `metagpt/roles/bi/` directory.
 | `Command ask_human not found` — bare name not in dispatch map | Prompt updated to use `RoleZero.ask_human` and `BIRequirementsAnalyst.generate_brd` | DEV-24 |
 | `Command DataSourceInspector.inspect_csv not found` — TOOL_REGISTRY ≠ tool_execution_map | Instantiate `DataSourceInspector()` and wire all 4 methods in `_update_tool_execution` | DEV-21 |
 | `AMBIGUOUS` classification short-circuits ReAct loop | Override `_quick_think` to always return `(None, "TASK")` | DEV-22 |
-| `inspect_csv` output ~5,000 tokens (verbose product descriptions, all-null columns) → hits free-tier TPM limit | Skip entirely-null columns; truncate sample strings to 60 chars | DEV-23 |
-| Groq free-tier TPM limit (12k tokens/request) hit after CSV inspection round | Architecture proven; use paid API (gpt-4o-mini ~€0.01/run) for Phase 2 test | — |
+| `inspect_csv` output ~5,000 tokens (verbose product descriptions, all-null columns) | Skip entirely-null columns; truncate sample strings to 60 chars | DEV-23 |
+| `openai.BadRequestError: 'max_tokens' not supported` with gpt-5.x models | Swap `max_tokens` → `max_completion_tokens` in `openai_api._cons_kwargs` for gpt-5/o3/o4 models | DEV-25 |
+| `KeyError: 'command_name'` when repair LLM produces non-command JSON | Guard `parse_commands` to filter commands missing `command_name`; return instructive error for self-correction | DEV-26 |
+| `docs/business_requirement_document.md` not found after successful generation | Editor writes to `workspace/docs/` — removed spurious `mkdir()`, updated runner check | DEV-27 |
 
-**What was verified working in live run:**
+**What was verified working:**
 - ✅ RoleZero ReAct loop activates on `UserRequirement` message
 - ✅ `RoleZero.ask_human` blocks for stdin input and returns response correctly
-- ✅ All 7 elicitation topics covered across 6 sequential `ask_human` calls
-- ✅ `DataSourceInspector.inspect_csv` called on all 3 CSVs and results returned to agent context
-- ✅ Agent correctly progresses through topics in order (end-users → goals → queries → KPIs → data sources → non-functional)
-- ⏳ Topic 7 (additional context) + Phase 2 (`generate_brd` call) not yet reached — free-tier TPM constraint only
+- ✅ All 7 elicitation topics covered across sequential `ask_human` calls
+- ✅ `DataSourceInspector.inspect_csv` called on all 3 CSVs in a single batched command
+- ✅ Agent progresses correctly through all topics in order
+- ✅ Phase 2: `BIRequirementsAnalyst.generate_brd` called with full elicitation history and schema summaries
+- ✅ `WriteBRD.run()` LLM call succeeded; BRD content returned
+- ✅ BRD saved to `workspace/docs/business_requirement_document.md` (16,036 bytes, 400 lines, 14 sections)
+- ✅ Message published with `cause_by=WriteBRD` to trigger BIDataModeler (not tested yet — awaits Session 4)
+- ✅ `end` command called cleanly; Alice produces a structured accomplishment summary
+
+**BRD quality assessment:**  
+The generated BRD covers all 8 required sections from the spec plus additional sections (Functional Requirements, Acceptance Criteria, Risks, Scope, Stakeholders). It correctly identifies 7 open questions from data quality issues found by DataSourceInspector (e.g. missing `quantity` field for revenue calculation, ambiguous `purchase` interaction type definition).
 
 ### Deviations logged
 
@@ -285,8 +295,19 @@ Empty package marker for the new `metagpt/roles/bi/` directory.
 | DEV-20 | `Team(use_mgx=False)` required — MGXEnv crashes without a TeamLeader role; applies to all BI runner scripts and `bi_team.py` |
 | DEV-21 | External tool class methods must be manually instantiated and wired into `tool_execution_map` in `_update_tool_execution` — TOOL_REGISTRY only provides LLM-visible schemas, not callables; applies to all BI agents |
 | DEV-22 | `_quick_think` overridden in BIRequirementsAnalyst to always return `(None, "TASK")` — prevents non-deterministic AMBIGUOUS classification from short-circuiting the elicitation loop |
-| DEV-23 | `DataSourceInspector.inspect_csv` updated: skip entirely-null columns + truncate sample strings to 60 chars — prevents verbose product catalogue files from exceeding free-tier token limits |
-| DEV-24 | All tool call references in BI prompts must use fully-qualified `ClassName.method_name` format matching the `tool_execution_map` keys — bare method names (e.g. `ask_human`) are not found by the RoleZero dispatcher; applies to all BI agents |
+| DEV-23 | `DataSourceInspector.inspect_csv` updated: skip entirely-null columns + truncate sample strings to 60 chars — prevents verbose product catalogue files from exceeding context limits |
+| DEV-24 | All tool call references in BI prompts must use fully-qualified `ClassName.method_name` format matching the `tool_execution_map` keys — bare method names are not found by the RoleZero dispatcher; applies to all BI agents |
+| DEV-25 | `max_tokens` → `max_completion_tokens` for gpt-5.x/o3/o4 models in `openai_api._cons_kwargs` — framework-level fix; affects all agents using gpt-5.x |
+| DEV-26 | `parse_commands` hardened: filter commands missing `command_name` and return self-correction prompt instead of crashing — framework-level fix; affects all RoleZero agents |
+| DEV-27 | Editor writes to `workspace/docs/` not `docs/` — removed `mkdir()` from `generate_brd()`; all future `generate_*()` methods must not call `mkdir()` before `editor.write()` |
+
+### Impact on Sessions 1-2
+
+| Area | Impact |
+|------|--------|
+| DEV-25 (`openai_api.py`) | Framework fix — no Session 1-2 files changed. All live test runs for Sessions 4-7 automatically benefit. |
+| DEV-26 (`role_zero_utils.py`) | Framework fix — no Session 1-2 files changed. All RoleZero-based agents (Sessions 3-7) automatically benefit. |
+| DEV-27 (workspace path) | Action classes (`write_brd.py`, `write_data_model.py`, `write_execution_plan.py`, `write_validation_report.py`) do not call `editor.write()` directly — they return content to the role's `generate_*()` method which does the saving. No changes needed in Sessions 1-2 files. **Rule for Sessions 4-7:** `generate_data_model()`, `generate_validation_report()` etc. must NOT call `mkdir()` before `editor.write()`. |
 
 ### Smoke test results
 
