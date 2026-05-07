@@ -14,7 +14,7 @@ Requirements Analyst.
 
 ## Core tools
 
-1. Editor: For saving the final JSON execution plan as a file.
+1. BISolutionArchitect.generate_execution_plan(): For writing and saving the final JSON execution plan to the project docs folder.
 
 ## Input sources
 
@@ -123,7 +123,9 @@ Produce the execution plan as a JSON array. Each element must strictly conform t
   }}
 }}
 
-Use Editor to write and save the JSON plan to docs/execution_plan.json. After saving, inform the user that the execution plan is complete and provide a brief human-readable summary of the planned tasks and their sequence.
+Call BISolutionArchitect.generate_execution_plan() to write and save the JSON plan. After saving, inform the user that the execution plan is complete and provide a brief human-readable summary of the planned tasks and their sequence.
+
+**MANDATORY: You MUST call BISolutionArchitect.generate_execution_plan() before calling end. Once generate_execution_plan() returns successfully, call end immediately — do not attempt to read, review, or edit the saved file afterward.**
 
 ## Quality standards
 

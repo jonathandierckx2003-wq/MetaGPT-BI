@@ -721,7 +721,67 @@ Consequent changes needed in Session 5:
 
 ## Session 5 deviations
 
-*(To be filled in during Session 5)*
+### DEV-34 — `bi_solution_architect.py` prompt: "Use Editor" → `BISolutionArchitect.generate_execution_plan()` + MANDATORY guard (confirms DEV-30)
+
+**Root cause:** DEV-30 (pre-logged in Session 4): `WriteExecutionPlan.run()` takes three large document strings as parameters; if called directly from the ReAct loop, the LLM would need to serialise ~6,000–8,000 tokens as literal JSON arguments.
+
+**Problem:**
+The original `bi_solution_architect.py` EXTRA_INSTRUCTION output format section said:
+> "Use Editor to write and save the JSON plan to docs/execution_plan.json."
+
+This contradicts the DEV-30 decision to add a `generate_execution_plan()` wrapper that retrieves documents from memory internally. The Core tools section also listed "Editor" as the only tool, which would have prompted the LLM to call Editor directly.
+
+**Implementation (Session 5):**
+
+Two changes to `metagpt/prompts/bi/bi_solution_architect.py`:
+
+1. **Core tools section** — updated from:
+   ```
+   1. Editor: For saving the final JSON execution plan as a file.
+   ```
+   to:
+   ```
+   1. BISolutionArchitect.generate_execution_plan(): For writing and saving the final JSON execution plan to the project docs folder.
+   ```
+
+2. **Output format section** — updated from:
+   ```
+   Use Editor to write and save the JSON plan to docs/execution_plan.json. After saving, inform the user that the execution plan is complete and provide a brief human-readable summary of the planned tasks and their sequence.
+   ```
+   to:
+   ```
+   Call BISolutionArchitect.generate_execution_plan() to write and save the JSON plan. After saving, inform the user that the execution plan is complete and provide a brief human-readable summary of the planned tasks and their sequence.
+
+   **MANDATORY: You MUST call BISolutionArchitect.generate_execution_plan() before calling end. Once generate_execution_plan() returns successfully, call end immediately — do not attempt to read, review, or edit the saved file afterward.**
+   ```
+
+The MANDATORY guard is the same pattern as DEV-33 (BIDataModeler) — prevents premature `end` calls and post-generation self-review attempts.
+
+**Files changed:** `metagpt/prompts/bi/bi_solution_architect.py`
+
+---
+
+### DEV-35 — `BISolutionArchitect` tools list: `["RoleZero", "Editor", "BISolutionArchitect"]` (replaces `WriteExecutionPlan`)
+
+**Theoretical design (DEV-02 / DEV-04):**
+DEV-02 noted that Agent 3 tools were `["RoleZero", "Editor", "WriteExecutionPlan"]` (WriteExecutionPlan registered directly as a callable tool via `@register_tool`). DEV-04 confirmed this pattern and implemented `@register_tool(include_functions=["run"])` on `WriteExecutionPlan`.
+
+**Problem (identified in DEV-30):**
+Exposing `WriteExecutionPlan.run(brd_content, dimensional_model_specification, logical_schema)` as a directly callable tool in the ReAct loop would require the LLM to serialise the three large document strings as JSON arguments — the same double-token / truncation problem as DEV-28.
+
+**Implementation (Session 5):**
+`BISolutionArchitect.generate_execution_plan()` is the single entry point for the LLM. It retrieves documents from memory internally and calls `WriteExecutionPlan.run()` from Python — not from the LLM's JSON command. The tools list therefore uses `"BISolutionArchitect"` (for the `@register_tool`-decorated `generate_execution_plan` method) instead of `"WriteExecutionPlan"`:
+
+```python
+tools: list[str] = ["RoleZero", "Editor", "BISolutionArchitect"]
+```
+
+`WriteExecutionPlan` retains its `@register_tool(include_functions=["run"])` decorator (it was already implemented this way in Session 1) but is not listed in the role's tools — it is called internally, not by the LLM.
+
+**Why:**
+Consistent with the Agent 1 and Agent 2 pattern (BIRequirementsAnalyst, BIDataModeler both list their own class name in tools for the `@register_tool`-decorated method). The LLM calls `generate_execution_plan()`; Python handles the rest.
+
+**Files changed:** `metagpt/roles/bi/bi_solution_architect.py` (tools list)
 
 ---
 

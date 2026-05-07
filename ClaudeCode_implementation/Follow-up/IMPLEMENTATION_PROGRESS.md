@@ -16,7 +16,7 @@ A transposition of the MetaGPT Software Company multi-agent system into the Busi
 | 2 | 6 tool classes (DuckDBExecutor, DbtRunner, PandasLoader, AirbyteConnector, SupabaseConnector, DataSourceInspector) | ✅ Complete |
 | 3 | BIRequirementsAnalyst (Agent 1) + standalone test + live e2e test | ✅ Complete |
 | 4 | BIDataModeler (Agent 2) + standalone test + live e2e test | ✅ Complete |
-| 5 | BISolutionArchitect (Agent 3) + standalone test | ⏳ Pending |
+| 5 | BISolutionArchitect (Agent 3) + standalone test | ✅ Complete (live test pending — requires LLM) |
 | 6 | BIAnalyticsEngineer (Agent 4) + standalone test | ⏳ Pending |
 | 7 | BIQAEngineer (Agent 5) + bi_team.py + end-to-end test | ⏳ Pending |
 
@@ -421,7 +421,77 @@ Step 4 updated (DEV-24 + DEV-28):
 
 ## Session 5 — BISolutionArchitect (Agent 3)
 
-*(To be filled in during Session 5)*
+**Goal:** Create the third BI agent role class: BISolutionArchitect (Eve). This agent observes the combined WriteDataModel message published by Bob, retrieves all relevant artifacts from memory, executes a three-step planning reasoning loop (select tools → identify tasks → order & resolve dependencies), and produces a validated JSON execution plan by calling `generate_execution_plan()`.
+
+### Files created
+
+#### `metagpt/roles/bi/bi_solution_architect.py` — BISolutionArchitect
+
+| Attribute | Value |
+|-----------|-------|
+| `name` | `"Eve"` |
+| `profile` | `"BI Solution Architect"` |
+| `goal` | Produce a complete, dependency-ordered DWH Technical Execution Plan in JSON format |
+| `constraints` | Same language as BRD; decisions based exclusively on BRD + data model; valid JSON; BITaskType only; ordered dependencies |
+| `instruction` | `BI_SOLUTION_ARCHITECT_INSTRUCTION` (= ROLE_INSTRUCTION + EXTRA_INSTRUCTION) |
+| `tools` | `["RoleZero", "Editor", "BISolutionArchitect"]` |
+| `todo_action` | `any_to_name(WriteExecutionPlan)` = `"WriteExecutionPlan"` |
+
+**Key implementation details:**
+
+| Method | Description |
+|--------|-------------|
+| `__init__` | Calls `super().__init__()` then `self._watch([WriteDataModel])` — required by DEV-16. Only WriteDataModel is the trigger; the BRD (WriteBRD) is accessible in memory via `observe_all_msg_from_buffer=True` |
+| `_quick_think` | Always returns `(None, "TASK")` — prevents AMBIGUOUS short-circuit (DEV-22) |
+| `reply_to_human` | Overridden for terminal visibility — prints `[Eve - BI Solution Architect]: {content}` (DEV-32 pattern) |
+| `_update_tool_execution` | Registers `BISolutionArchitect.generate_execution_plan` in tool execution map (DEV-21) |
+| `_extract_section` | Static helper: strips the `## Heading\n\n` prefix from a WriteDataModel combined-message section |
+| `generate_execution_plan()` | `@register_tool` method: retrieves BRD from WriteBRD message + combined data model from WriteDataModel message in memory (DEV-30) → splits combined on `"\n\n---\n\n"` to extract spec and logical schema → calls `WriteExecutionPlan.run()` → saves `docs/execution_plan.json` via editor → publishes `Message(cause_by=WriteExecutionPlan)` to trigger BIAnalyticsEngineer |
+
+**Class decorator:** `@register_tool(include_functions=["generate_execution_plan"])` — exposes `generate_execution_plan` in TOOL_REGISTRY under the `"BISolutionArchitect"` key.
+
+**Memory retrieval — combined message parsing:** The WriteDataModel message from BIDataModeler contains all three dimensional modeling artifacts in a single combined string:
+```
+## Dimensional Model Specification\n\n{spec}\n\n---\n\n## Conceptual Schema...\n\n---\n\n## Logical Schema...\n\n{logical}
+```
+`generate_execution_plan()` splits this on `"\n\n---\n\n"` (3 parts) and uses `_extract_section()` to strip the `## Heading\n\n` prefix from parts[0] (spec) and parts[2] (logical schema). Only these two are passed to `WriteExecutionPlan.run()` — the conceptual schema is not needed for execution planning.
+
+### Files modified
+
+#### `metagpt/prompts/bi/bi_solution_architect.py`
+Two changes applying DEV-30 and DEV-33:
+1. Core tools section: `"Editor: For saving the final JSON..."` → `"BISolutionArchitect.generate_execution_plan(): For writing and saving the final JSON..."`
+2. Output format section: `"Use Editor to write and save the JSON plan..."` → `"Call BISolutionArchitect.generate_execution_plan()..."` + added MANDATORY guard:
+```
+**MANDATORY: You MUST call BISolutionArchitect.generate_execution_plan() before calling end. Once generate_execution_plan() returns successfully, call end immediately — do not attempt to read, review, or edit the saved file afterward.**
+```
+
+### Deviations applied
+
+| Deviation | Summary |
+|-----------|---------|
+| DEV-30 | `generate_execution_plan()` takes no parameters; BRD and data model artifacts retrieved internally from memory — same pattern as DEV-28 for Bob. Prompt updated accordingly. |
+| DEV-33 pattern | MANDATORY guard added to prompt preventing premature `end` and post-generation self-review — same pattern as Session 4 |
+
+### Smoke test results
+
+**Test file:** `ClaudeCode_implementation/tests/test_session5_bi_solution_architect.py`
+
+**21/21 tests pass:**
+- `TestBISolutionArchitectInstantiation`: name, profile, goal, todo_action, tools list, watch set (WriteDataModel only, NOT WriteBRD), tool execution map entry, instruction content (generate_execution_plan), MANDATORY guard in instruction
+- `TestToolRegistration`: BISolutionArchitect in TOOL_REGISTRY, `generate_execution_plan` schema does NOT expose `brd_content` or `dimensional_model_specification` parameters
+- `TestGenerateExecutionPlan`: saves file with correct path/extension, publishes message with `cause_by=WriteExecutionPlan` and `sent_from="Eve"`, returns confirmation with artifact path, error handling when no BRD in memory, error handling when no data model in memory, `WriteExecutionPlan.run()` called with correctly extracted spec and logical schema sections, published message content matches plan JSON
+- `TestExtractSection`: heading stripping correct for spec, logical, and edge case (no double-newline)
+
+### Cross-session impact of Session 5
+
+| Area | Impact |
+|------|--------|
+| `metagpt/prompts/bi/bi_solution_architect.py` (Session 1) | **Changed** — Core tools + output format sections updated to `BISolutionArchitect.generate_execution_plan()` (DEV-30). MANDATORY guard added (DEV-33 pattern). |
+| `metagpt/actions/bi/write_execution_plan.py` (Session 1) | **No change** — `run(brd_content, dimensional_model_specification, logical_schema)` signature kept as-is; called internally by `generate_execution_plan()`. |
+| All Session 2 tool classes | No impact. |
+| All Session 3 framework fixes and role | No impact. |
+| `metagpt/roles/bi/bi_data_modeler.py` (Session 4) | No impact. |
 
 ---
 
