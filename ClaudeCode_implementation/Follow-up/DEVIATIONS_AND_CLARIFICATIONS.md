@@ -1491,3 +1491,46 @@ else:
 | 11 | TRANSFORMATION (fact_purchases) | Model corrected (schema alignment); built as view |
 
 **Self-correction behaviour (Tasks 8, 9, 11):** The LLM-generated SQL initially referenced columns that differed from the actual Faker schema. Alex's ReAct loop detected the dbt runtime errors, rewrote the SQL via `DbtRunner.write_model()`, and retried successfully — demonstrating the correction loop working as designed.
+
+---
+
+## Session 8 deviations
+
+### DEV-59 — `generate_validation_report()` exposed with 2 parameters instead of 6
+
+**Theoretical design:**  
+The thesis and `IMPLEMENTATION_SPEC.md` specify `generate_validation_report()` with 6 parameters: `structural_validation_results`, `traceability_validation_results`, `brd_summary`, `logical_schema`, `execution_plan`, `dwh_connection_details`.
+
+**Implementation:**  
+Only 2 parameters are exposed in the `@register_tool` interface: `structural_validation_results` and `traceability_validation_results`. The other 4 reference artifacts (`brd_summary`, `logical_schema`, `execution_plan`, `dwh_connection_details`) are retrieved from `self.rc.memory` internally using `_get_from_memory()`, following the DEV-28 pattern.
+
+The Agent 5 prompt file (`metagpt/prompts/bi/bi_qa_engineer.py`) was updated in Session 8 to reflect this: the Core tools section lists the 2-parameter signature; Phase 3 specifies the 2-parameter call with a `**MANDATORY**` guard ("You MUST call BIQAEngineer.generate_validation_report() before calling end"); the correction cycle section was also updated to use the 2-parameter form.
+
+**Why:**  
+Passing four large documents (BRD ~5 KB, logical schema ~3 KB, execution plan ~8 KB, execution report ~5 KB) as JSON string arguments to an LLM-driven tool call would consume an additional ~21 KB of tokens per call in both the outgoing tool call and the LLM's reasoning context. These documents are already in the shared message pool; retrieving them from memory avoids double-token consumption and eliminates the risk of truncation for longer documents. This is the same rationale as DEV-28 (applied to `generate_brd`, `generate_data_model`, `publish_execution_plan`, `publish_execution_report`).
+
+---
+
+### DEV-60 — `validation_round_allowed` is a configurable Pydantic field, not a hard-coded constant
+
+**Theoretical design:**  
+`IMPLEMENTATION_SPEC.md` specifies a fixed maximum of 3 correction rounds before the pipeline stops with a failed validation report. The thesis does not specify a number.
+
+**Implementation:**  
+`validation_round_allowed: int = 3` is declared as a Pydantic field on `BIQAEngineer`, defaulting to 3. It can be overridden at instantiation time: `BIQAEngineer(validation_round_allowed=5)`.
+
+**Why:**  
+The number of allowed correction rounds is a deployment-time tuning parameter, not a hard-wired architectural constant. Making it configurable allows users running the BI pipeline programmatically (e.g. in `bi_team.py`) to adjust the budget without modifying the source code. The default of 3 preserves the spec's intent.
+
+---
+
+### DEV-61 — Exhausted-rounds report saved to `failed_validation_report.md` without publishing
+
+**Theoretical design:**  
+The thesis states that if all correction rounds are exhausted, the pipeline stops and the human user can consult the final Validation Feedback Report. It does not explicitly specify the file path or whether the message should be published.
+
+**Implementation:**  
+When `_validation_round >= validation_round_allowed` and the outcome is REJECTED, the report is saved to `workspace/docs/failed_validation_report.md` instead of `workspace/docs/validation_feedback_report.md`, and `publish_message()` is **not** called.
+
+**Why:**  
+`BIAnalyticsEngineer` watches for `WriteValidationReport` messages. If the exhausted-rounds report were published with `cause_by=WriteValidationReport`, Alex would be re-triggered for a correction cycle that cannot succeed (the round limit has already been reached). Saving to a distinct path and suppressing publication ensures Alex is never re-triggered, the pipeline stops cleanly, and the human user can inspect the failure report at its known location.

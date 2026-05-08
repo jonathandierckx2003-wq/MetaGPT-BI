@@ -19,7 +19,8 @@ A transposition of the MetaGPT Software Company multi-agent system into the Busi
 | 5 | BISolutionArchitect (Agent 3) + standalone test + live e2e test | ✅ Complete |
 | 6 | BIAnalyticsEngineer (Agent 4) + standalone test + live e2e test (DuckDB scenario) | ✅ Complete |
 | 7 | Scenario 2 live test: Supabase + Airbyte + dbt-postgres (requires accounts — see LIM-01) | ✅ Complete |
-| 8 | BIQAEngineer (Agent 5) + bi_team.py + end-to-end test | ⏳ Pending |
+| 8 | BIQAEngineer (Agent 5) + standalone test (37/37) + live e2e test (DuckDB — REJECTED, empty fact tables) | ✅ Complete |
+| 9 | bi_team.py + full end-to-end pipeline tests (both scenarios) | ⏳ Pending |
 
 ---
 
@@ -50,7 +51,7 @@ One file per agent, each exporting an `EXTRA_INSTRUCTION` string constant. Combi
 | `bi_data_modeler.py` | Agent 2 (Bob) | Four-step reasoning: Analyze BRD → Choose schema type → Identify facts/dims/measures → Produce 3 artifacts |
 | `bi_solution_architect.py` | Agent 3 (Eve) | Three-step reasoning: Select tools → Identify tasks → Order & resolve dependencies → Output JSON plan |
 | `bi_analytics_engineer.py` | Agent 4 (Alex) | Full ELT execution protocol per task type + dynamic state injection + correction loop on Validation Feedback Report |
-| `bi_qa_engineer.py` | Agent 5 (Edward) | Two-phase validation: structural/technical checks + requirements traceability checks → Validation Feedback Report |
+| `bi_qa_engineer.py` | Agent 5 (Edward) | Two-phase validation: structural/technical checks + requirements traceability checks → Validation Feedback Report. **Updated in Session 8** (DEV-59, DEV-61): Core tools section updated to 2-param `generate_validation_report()` call; Phase 3 MANDATORY guard added; correction cycle section updated. |
 
 #### `metagpt/actions/bi/`
 Four Action classes. Each:
@@ -706,6 +707,7 @@ The following table summarises differences between the thesis description (secti
 | `metagpt/roles/bi/bi_analytics_engineer.py` | **Changed** (DEV-44) — `init_project`/`attach_project` removed from `tool_execution_map`; `_run_dbt` refactored to disconnect DuckDBExecutor before dbt runs |
 | `metagpt/prompts/bi/bi_analytics_engineer.py` | **Changed** (DEV-44) — TRANSFORMATION MANDATORY sub-steps; Step 3 3-step guard; Getting Started section; CREDENTIAL_REQUEST account-setup guidance |
 | Sessions 1–5 (all other files) | No impact — no Session 1-5 file references DbtRunner directly (verified by codebase search) |
+| `workspace/` artifacts (Session 7 onward) | **WARNING:** Session 7 (Supabase scenario) overwrites `workspace/docs/execution_plan.json`, `workspace/docs/execution_report.md`, and `dbt_projects/bi_dwh/` with PostgreSQL-compatible artifacts. Session 6's DuckDB DWH (`workspace/dwh.duckdb`) remains intact but its fact tables become unreachable via dbt. Session 8 validation correctly detects and reports empty fact tables as a REJECTED outcome. **Session 9 must run each scenario test with a clean workspace to avoid cross-contamination.** |
 
 ---
 
@@ -820,10 +822,103 @@ The following table summarises differences between the thesis description (secti
 | `ClaudeCode_implementation/tests/test_session6_bi_analytics_engineer.py` (Session 6) | **Fixed** — `test_credential_request_returns_redirect_without_dispatch`: assertion updated from `assertIn("ask_human", result)` to `assertIn("CREDENTIAL_REQUEST", result)` — DEV-50 changed CREDENTIAL_REQUEST to return an acknowledgment string rather than an ask_human redirect. 32/32 tests still pass. |
 | `ClaudeCode_implementation/tests/test_session7_scenario2.py` | Updated — `TestDEV50CredentialInjection` (7 new tests) added; total 27/27 pass. |
 | `ClaudeCode_implementation/tests/run_session7_live.py` | Updated — `_collect_credentials()` asks for `client_id`/`client_secret`/`workspace_id` (was `api_key`); returns 9 credential values; Session pooler URI instructions corrected; DEV-50 credential injection wired. |
+| **Workspace artifacts (DuckDB scenario)** | **Overwritten** — `workspace/docs/execution_plan.json` now contains the Supabase 11-task plan; `workspace/docs/execution_report.md` now contains the Supabase execution report; `dbt_projects/bi_dwh/` now contains PostgreSQL-flavored dbt models. `workspace/dwh.duckdb` remains intact (not touched by Supabase scenario) but its fact tables are empty because the now-present dbt models are PostgreSQL-incompatible with DuckDB. Session 8 Edward validates this DWH and correctly produces a REJECTED report citing empty fact tables. |
 | All Sessions 1–5 files | No impact. |
 
 ---
 
-## Session 8 — BIQAEngineer (Agent 5) + bi_team.py + end-to-end test
+## Session 8 — BIQAEngineer (Agent 5) + standalone test + live e2e test (DuckDB scenario)
 
-*(To be filled in during Session 8)*
+**Goal:** Implement Agent 5 (Edward the BI QA Engineer), its standalone smoke tests, and a live DuckDB e2e test that validates the DWH produced in Session 6. `bi_team.py` and full pipeline tests are deferred to Session 9.
+
+### Files created
+
+#### `metagpt/roles/bi/bi_qa_engineer.py`
+Implements `BIQAEngineer` (Agent 5 — Edward). Key design decisions:
+
+- Inherits from `RoleZero`; overrides `_quick_think` to always return `(None, "TASK")` (DEV-22).
+- `_watch([WriteExecutionReport])` in `__init__` (DEV-16): Edward activates when Alex publishes an Execution Report.
+- `todo_action = WriteValidationReport` — signals to RoleZero what the expected deliverable is.
+- `tools = ["RoleZero", "Editor", "BIQAEngineer", "DuckDBExecutor", "SupabaseConnector"]` — both DWH backends available; LLM selects based on the connection details in the Execution Report.
+- `max_react_loop = 50` — generous budget for ~55 Phase 1 checks + Phase 2 + report call.
+- `validation_round_allowed: int = 3` — configurable Pydantic field (DEV-60).
+- `_validation_round: int = 0` — instance counter incremented on each `generate_validation_report()` call.
+
+**Lazy-init helpers (DEV-40 pattern):**
+`_get_duckdb_executor()` and `_get_supabase_connector()` use `getattr(self, "_attr", None)` guards to create tool instances only when first needed, avoiding Pydantic `model_validator` timing issues.
+
+**`_update_tool_execution()`:** Wires all DuckDB and Supabase callable methods into `tool_execution_map` (DEV-21 pattern). Exposes:
+- `DuckDBExecutor`: `connect`, `run_query`, `verify_table`, `list_tables`, `get_table_schema`, `check_pk_uniqueness`, `check_fk_integrity`
+- `SupabaseConnector`: same 7 methods
+
+**Memory helpers:**
+- `_get_from_memory(action_class)` — retrieves the most recent message of a given `cause_by` type from `self.rc.memory` (DEV-28 pattern).
+- `_extract_logical_schema(data_model_content)` — splits the combined WriteDataModel message on `"\n\n---\n\n"` and returns `parts[2]` (the logical schema).
+- `_extract_connection_details(execution_report)` — finds the `"## Getting Started"` section in the Execution Report.
+
+**`generate_validation_report(structural_validation_results, traceability_validation_results)` — `@register_tool`:**
+- Retrieves BRD, data model, execution plan, execution report from memory (DEV-59).
+- Calls `WriteValidationReport.run()` with all 6 parameters internally.
+- Outcome detection: checks for `"REJECTED"` first (takes precedence — a rejected report may contain the word "ACCEPTED" in context), then `"ACCEPTED"`.
+- Increments `_validation_round` counter.
+- Exhausted rounds (REJECTED + round ≥ allowed): saves to `docs/failed_validation_report.md`, does NOT publish (DEV-61).
+- Standard path: saves to `docs/validation_feedback_report.md` and publishes with `cause_by=WriteValidationReport` so BIAnalyticsEngineer is re-triggered on REJECTED.
+
+#### `metagpt/prompts/bi/bi_qa_engineer.py`
+Updated (existing file from Session 1):
+- **Core tools section:** Updated to list `DuckDBExecutor.connect(db_path)` first, then its 6 read-only methods; same for `SupabaseConnector`. Replaced general "Editor" mention with the 2-parameter `BIQAEngineer.generate_validation_report(structural_validation_results, traceability_validation_results)` signature.
+- **Phase 3 call:** Changed from 6-parameter signature to 2-parameter + "do NOT pass brd_summary..." note + `**MANDATORY**` guard: "You MUST call `BIQAEngineer.generate_validation_report()` before calling end."
+- **Correction cycle section:** Updated `generate_validation_report()` call to use 2-parameter signature.
+
+#### `ClaudeCode_implementation/tests/test_session8_bi_qa_engineer.py`
+37 standalone smoke tests across 6 test classes:
+
+| Class | Tests | What is verified |
+|-------|-------|------------------|
+| `TestBIQAEngineerInstantiation` | 15 | name/profile/goal/constraints, todo_action=WriteValidationReport, tools list, max_react_loop=50, validation_round_allowed=3, configurable at init, _validation_round=0 |
+| `TestToolRegistration` | 4 | _update_tool_execution wires all 15 map entries; BIQAEngineer.generate_validation_report callable |
+| `TestGenerateValidationReport` | 8 | ACCEPTED publishes + saves to standard path; REJECTED below max publishes + saves; exhausted rounds saves to failed_path + does NOT publish; error on missing BRD; error on missing execution report (BRD injected first); instruction contains generate_validation_report + MANDATORY |
+| `TestExtractHelpers` | 6 | logical schema extraction (3-part split, malformed fallback, empty); connection details extraction (marker found, fallback, empty) |
+| `TestDWHLazyInit` | 2 | _get_duckdb_executor / _get_supabase_connector return same instance on repeated calls |
+| `TestValidationRoundTracking` | 2 | ACCEPTED increments round; REJECTED below max increments round |
+
+All 37 tests pass. Key pattern: `agent.editor = MagicMock()` — replaces the entire Editor instance to bypass `~/.metagpt/config2.yaml` reads (same Session 5 pattern).
+
+#### `ClaudeCode_implementation/tests/run_session8_live.py`
+Live e2e test for Edward (DuckDB scenario). Loads all Session 3–6 artifacts from `workspace/docs/`, assembles the combined data model message in the same 3-part format as `BIDataModeler.generate_data_model()`, pre-publishes BRD + data model + execution plan + execution report into the shared message pool, then runs `Team(use_mgx=False)` with `BIQAEngineer()` for up to 60 rounds. Post-run checks: `validation_feedback_report.md` existence, size, outcome keyword, Phase 1 PASS/FAIL counts, Phase 2 SUPPORTED/COMPUTABLE/INGESTED counts.
+
+### Deviations logged
+
+| DEV | Summary |
+|-----|---------|
+| DEV-59 | `generate_validation_report()` exposed with 2 params instead of 6; 4 reference artifacts retrieved from memory (DEV-28 pattern) |
+| DEV-60 | `validation_round_allowed` is a configurable Pydantic field (default 3) instead of a hard-coded constant |
+| DEV-61 | Exhausted-rounds report saved to `failed_validation_report.md` without publishing, preventing re-triggering of BIAnalyticsEngineer |
+
+### Test results (standalone)
+
+```
+Ran 37 tests in 9.244s
+OK
+```
+
+### Live test results
+
+**Run:** 2026-05-09 — `python ClaudeCode_implementation/tests/run_session8_live.py`
+
+**Outcome: REJECTED** (correct behaviour — Edward caught real DWH issues)
+
+**What worked:**
+- Edward connected to `workspace/dwh.duckdb` as his first action (correct tool selection from Execution Report context)
+- Phase 1 structural checks: all 11 tables found with correct schemas and non-empty where expected
+- Phase 2 traceability checks: ran against all BRD queries, KPIs, and data sources
+- Called `generate_validation_report()` and produced `workspace/docs/validation_feedback_report.md` (8,127 bytes)
+- Published the message — in a full pipeline, BIAnalyticsEngineer would be re-triggered
+
+**Why REJECTED:** `dim_date`, `fact_sales`, `fact_interaction`, and `fact_customer_summary` all had 0 rows. Cause: the dbt models at `dbt_projects/bi_dwh/` were overwritten by the Session 7 Supabase run (PostgreSQL SQL), rendering them incompatible with the DuckDB DWH. Edward correctly identified and reported the empty tables.
+
+**Dim tables with data:** dim_category (942 rows), dim_customer (3,900 rows), dim_interaction_type (3 rows), dim_product (10,002 rows).
+
+**Note on synthetic execution report:** `workspace/docs/execution_report.md` was also overwritten by Session 7, so the live test embeds a synthetic DuckDB execution report inline. This is the correct long-term design for Session 9 (full pipeline test), where Alex will produce a fresh DuckDB report.
+
+**Validation report written to:** `workspace/docs/validation_feedback_report.md`
