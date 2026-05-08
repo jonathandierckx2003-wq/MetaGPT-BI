@@ -107,21 +107,29 @@ def _collect_credentials() -> dict[str, str]:
     db_host = f"db.{m.group(1)}.supabase.co" if m else ""
 
     # Extract password from the postgres URI: postgresql://user:PASSWORD@host:port/db
-    m2 = re.search(r"://[^:]+:([^@]+)@", supabase_pg_uri)
+    # Use the last colon-delimited segment before @ to handle any user-typo prefixes
+    m2 = re.search(r":([^:@]+)@", supabase_pg_uri)
     db_password = m2.group(1) if m2 else ""
+    # Sanity-check: if extracted password looks like a URI fragment, ask manually
+    if not db_password or db_password.startswith("//") or len(db_password) > 128:
+        db_password = ""
 
     if not db_host:
         print("  [WARN] Could not derive DB host from Project URL. Enter it manually:")
         db_host = input("  Direct DB host (e.g. db.abc.supabase.co): ").strip()
     if not db_password:
-        print("  [WARN] Could not extract password from PostgreSQL URI. Enter it manually:")
-        db_password = input("  DB password: ").strip()
+        print("  [WARN] Could not extract DB password from PostgreSQL URI. Enter it manually:")
+        db_password = input("  DB password (the password in your postgres URI): ").strip()
 
     print(f"\n  Derived direct DB host : {db_host}")
 
     print("\n--- Airbyte Cloud (https://cloud.airbyte.com) ---")
-    print("  Go to: Settings > API keys to create or copy an API key.")
-    print("  Your workspace ID is in the URL: app.airbyte.com/workspaces/<workspace_id>")
+    print("  To get your API key:")
+    print("    Go to: User Settings (top-right avatar) > Applications > Create application")
+    print("    Copy the generated client secret / API key.")
+    print("  To get your workspace ID:")
+    print("    Go to: Workspace Settings — the ID is in the URL:")
+    print("    app.airbyte.com/workspaces/<workspace_id>/settings")
     airbyte_api_key = input("\n  API key: ").strip()
     airbyte_workspace_id = input("  Workspace ID: ").strip()
 
@@ -166,9 +174,28 @@ async def main():
     logical_content = _load_text(LOGICAL_SCHEMA_PATH, "Logical schema (from Session 4)")
 
     # ------------------------------------------------------------------
+    # Collect credentials before building the plan message (DEV-50)
+    # The CREDENTIAL_REQUEST task instructions are then rewritten so the
+    # LLM calls execute_BI_task() instead of trying to ask the human.
+    # ------------------------------------------------------------------
+    print("\n[2a] Collecting credentials (required before agent session starts)...")
+    credentials = _collect_credentials()
+
+    # Rewrite CREDENTIAL_REQUEST task instructions in the plan so the LLM
+    # never attempts to call ask_human or reply_to_human for these tasks.
+    for task in plan:
+        if task.get("task_type") == "CREDENTIAL_REQUEST":
+            task["instruction"] = (
+                "Credentials for this service have already been collected by the orchestration "
+                "layer before this session started and are stored in system memory. "
+                "Call BIAnalyticsEngineer.execute_BI_task(task) with this exact task object "
+                "to acknowledge completion. Do NOT call ask_human or reply_to_human."
+            )
+
+    # ------------------------------------------------------------------
     # Assemble messages
     # ------------------------------------------------------------------
-    print("\n[2a] Assembling pre-published messages for BIAnalyticsEngineer...")
+    print("\n[2b] Assembling pre-published messages for BIAnalyticsEngineer...")
 
     brd_message = Message(
         content=brd_content,
@@ -185,12 +212,6 @@ async def main():
         cause_by="metagpt.actions.bi.write_execution_plan.WriteExecutionPlan",
         sent_from="Eve",
     )
-
-    # ------------------------------------------------------------------
-    # Collect credentials before starting the agent (DEV-50)
-    # ------------------------------------------------------------------
-    print("\n[2b] Collecting credentials (required before agent session starts)...")
-    credentials = _collect_credentials()
 
     # ------------------------------------------------------------------
     # Build team and run
