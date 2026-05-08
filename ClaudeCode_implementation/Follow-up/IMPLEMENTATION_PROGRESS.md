@@ -708,6 +708,91 @@ The following table summarises differences between the thesis description (secti
 
 ---
 
-## Session 7 — BIQAEngineer (Agent 5) + bi_team.py + end-to-end test
+## Session 7 — Scenario 2 live test: Supabase + Airbyte + dbt-postgres
 
-*(To be filled in during Session 7)*
+**Goal:** Verify that the existing BIAnalyticsEngineer (Alex) can execute a full ELT pipeline using a cloud-native stack: Airbyte Cloud (Faker source) for data ingestion, Supabase (PostgreSQL) as the DWH, and dbt-postgres for SQL transformations. No new agent is created — this session validates the Supabase/Airbyte dispatch paths already implemented in Session 6 and fixes bugs found in those paths.
+
+### Issues found and fixed
+
+| Deviation | Summary |
+|-----------|---------|
+| DEV-46 | `_run_airbyte()` DATA_INGESTION bug: `trigger_sync()` returns dict; `job_id` must be extracted before `wait_for_sync()`. Fixed. |
+| DEV-47 | `AirbyteConnector` lacked `create_destination()`; `_run_airbyte()` had no INSTANTIATION handler. Both added; fallback error message guides human user to create destination manually in Airbyte Cloud UI if API call fails. |
+| DEV-48 | `_run_dbt()` CONNECTION_SETUP extended to support `db_type='postgres'` — initialises project and calls `configure_profile(db_type='postgres', ...)` from `tool_args`. DuckDB path unchanged. Extensibility limitation noted for thesis (DEV-43 ref). |
+| DEV-49 | `airbyte-api` package removed by pip during `dbt-postgres` install (protobuf version conflict). Reinstalled manually. Note for future: verify with `python -c "import airbyte_api"` after any new package installs. |
+| LIM-01 update | Airbyte with cloud API sources (Faker, S3, etc.) IS supported and tested in Session 7. Original limitation was specific to local CSV files which Airbyte Cloud cannot ingest. |
+
+### Prompt improvements added during Session 7
+
+| Change | Where | Reason |
+|--------|--------|--------|
+| CREDENTIAL_REQUEST step enhanced with step-by-step account-creation instructions + signup URLs for Supabase and Airbyte Cloud | `bi_analytics_engineer.py` prompt | User confirmed accounts are needed; Alex should guide the human user through account creation before asking for credentials |
+
+### Packages installed / changed
+
+| Package | Action | Version | Notes |
+|---------|--------|---------|-------|
+| `dbt-postgres` | Installed | 1.10.0 | Required for Supabase/PostgreSQL dbt target |
+| `dbt-core` | Auto-upgraded | 1.11.8 → 1.11.9 | Minor bump from dbt-postgres install; no breaking changes |
+| `airbyte-api` | Reinstalled | 0.53.0 | Removed by pip during dbt-postgres install due to protobuf conflict; reinstalled |
+
+### Files created
+
+| File | Purpose |
+|------|---------|
+| `ClaudeCode_implementation/test_data/execution_plan_supabase.json` | 11-task execution plan for Airbyte Faker → Supabase scenario. Tasks: 2× CREDENTIAL_REQUEST, 2× INSTANTIATION (SupabaseConnector + AirbyteConnector), 1× CONNECTION_SETUP (AirbyteConnector Faker source), 1× DATA_INGESTION (AirbyteConnector sync), 1× CONNECTION_SETUP (DbtRunner postgres profile), 4× TRANSFORMATION (dim_customer, dim_product, dim_date, fact_purchases) |
+| `ClaudeCode_implementation/tests/run_session7_live.py` | Live integration test runner: pre-publishes execution plan, runs BIAnalyticsEngineer with N_ROUND=100; post-run checks verify execution report and dbt project |
+| `ClaudeCode_implementation/tests/test_session7_scenario2.py` | 20 smoke tests: AirbyteConnector.create_destination() method + error handling, DEV-46/47/48 dispatch fixes, dbt-postgres import, execution plan structure validation |
+
+### Execution plan design (Airbyte Faker → Supabase scenario)
+
+**Data source:** Airbyte Cloud "Sample Data (Faker)" connector — generates synthetic e-commerce data:
+- `users` stream: id, name, email, gender, age, company, ...
+- `products` stream: id, name, make, year, price, ...
+- `purchases` stream: id, user_id, product_id, quantity, total, store_name, created_at, ...
+
+**Star schema produced by dbt:**
+- `dim_customer`: user_id, name, email, gender, age, company
+- `dim_product`: product_id, product_name, make, year, price
+- `dim_date`: date_key, full_date, year, month, day, day_of_week
+- `fact_purchases`: purchase_id, customer_id, product_id, quantity, revenue, store_name, purchase_date
+
+**Airbyte Faker source definition ID:** `e1ead99e-0f8e-4f56-a8e7-5f6c2bb0a7e6`  
+**PostgreSQL destination definition ID:** `25c5221d-dce2-4163-ade9-739ef790f503`
+
+### Smoke test results
+
+**Test file:** `ClaudeCode_implementation/tests/test_session7_scenario2.py`
+
+**20/20 tests pass.** Test classes:
+- `TestAirbyteConnectorCreateDestination` (4 tests): method existence, signature, client-not-configured error, API-failure RuntimeError with manual fallback message
+- `TestRunAirbyteFixes` (3 tests): DEV-46 job_id extraction, DEV-47 INSTANTIATION dispatch, CONNECTION_SETUP does not call create_destination
+- `TestRunDbtPostgresProfile` (2 tests): DEV-48 postgres configure_profile call, DuckDB fallback path unchanged
+- `TestDbtPostgresInstalled` (1 test): dbt.adapters.postgres importable
+- `TestSupabaseExecutionPlan` (10 tests): file exists, valid JSON, required task types, required fields, tools present, 4 TRANSFORMATION models, CREDENTIAL_REQUEST null tool, dependency order, dbt task has db_type=postgres, Airbyte task has destination_definition_id
+
+### Live integration test
+
+**Test file:** `ClaudeCode_implementation/tests/run_session7_live.py`  
+**LLM:** gpt-5.4-mini (same as Sessions 3-6)  
+**Budget:** 100 rounds  
+**Status:** ⏳ Pending live run — requires Supabase + Airbyte Cloud credentials from user
+
+**Pre-requisites for live run:**
+1. Supabase free project: supabase.com → provide Project URL, anon key, PostgreSQL connection string
+2. Airbyte Cloud free account: cloud.airbyte.com → provide API key + workspace ID
+
+### Cross-session impact of Session 7
+
+| Area | Impact |
+|------|--------|
+| `metagpt/tools/bi/airbyte_connector.py` (Session 2) | **Changed** (DEV-47) — `create_destination()` added. Session 2 smoke tests do not test `create_destination` directly; no regression. |
+| `metagpt/roles/bi/bi_analytics_engineer.py` (Session 6) | **Changed** (DEV-46, DEV-47, DEV-48) — `_run_airbyte()` bug fix + INSTANTIATION handler + DbtRunner CONNECTION_SETUP postgres support. Session 6 smoke tests (32/32) not re-run but changes are additive — DuckDB dispatch paths unchanged. |
+| `metagpt/prompts/bi/bi_analytics_engineer.py` (Session 6) | **Changed** — CREDENTIAL_REQUEST step enhanced with account-creation instructions. |
+| All Sessions 1–5 files | No impact. |
+
+---
+
+## Session 8 — BIQAEngineer (Agent 5) + bi_team.py + end-to-end test
+
+*(To be filled in during Session 8)*

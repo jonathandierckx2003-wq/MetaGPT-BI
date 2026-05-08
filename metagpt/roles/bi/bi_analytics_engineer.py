@@ -237,8 +237,30 @@ class BIAnalyticsEngineer(RoleZero):
             return f"Model '{model_name}': run={run_result} | tests={test_result}"
 
         if task_type == "CONNECTION_SETUP":
+            db_type = tool_args.get("db_type", "")
+            # DEV-48: if db_type='postgres' is specified, auto-init project and configure
+            # a postgres profile so TRANSFORMATION tasks run against Supabase instead of DuckDB.
+            # The auto-configure guard in the TRANSFORMATION branch checks if profiles.yml already
+            # exists and skips DuckDB config — so this must run before the first TRANSFORMATION.
+            if db_type == "postgres":
+                if dbt._project_dir is None:
+                    dbt.init_project("bi_dwh")
+                dbt.configure_profile(
+                    profile_name=dbt._project_dir.name,
+                    target_name="dev",
+                    db_type="postgres",
+                    host=tool_args.get("host", ""),
+                    port=int(tool_args.get("port", 5432)),
+                    user=tool_args.get("user", ""),
+                    password=tool_args.get("password", ""),
+                    dbname=tool_args.get("dbname", "postgres"),
+                    schema=tool_args.get("schema", "public"),
+                )
+                return f"dbt postgres profile configured for host: {tool_args.get('host', '')} (schema: {tool_args.get('schema', 'public')})"
             project_dir = tool_args.get("project_dir", "")
-            return dbt.attach_project(project_dir)
+            if project_dir:
+                return dbt.attach_project(project_dir)
+            return "CONNECTION_SETUP: no db_type or project_dir provided."
 
         return f"Unsupported DbtRunner task_type: '{task_type}'."
 
@@ -263,12 +285,17 @@ class BIAnalyticsEngineer(RoleZero):
             api_key=tool_args.get("api_key", ""),
             workspace_id=tool_args.get("workspace_id", ""),
         )
+        # DEV-47: INSTANTIATION creates the Airbyte destination (e.g. Supabase PostgreSQL)
+        if task_type == "INSTANTIATION":
+            return str(connector.create_destination(tool_args.get("destination_config", tool_args)))
         if task_type == "CONNECTION_SETUP":
-            return connector.setup_connection(tool_args.get("source_config", {}))
+            return str(connector.setup_connection(tool_args.get("source_config", {})))
         if task_type == "DATA_INGESTION":
             connection_id = tool_args.get("connection_id", "")
-            job_id = connector.trigger_sync(connection_id)
-            return connector.wait_for_sync(job_id)
+            # DEV-46: trigger_sync() returns {"job_id": ..., "status": ...}; extract before wait_for_sync()
+            trigger_result = connector.trigger_sync(connection_id)
+            job_id = str(trigger_result["job_id"])
+            return str(connector.wait_for_sync(job_id))
         return f"Unsupported AirbyteConnector task_type: '{task_type}'."
 
     async def publish_execution_report(self) -> str:

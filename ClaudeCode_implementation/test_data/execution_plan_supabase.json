@@ -1,0 +1,142 @@
+[
+  {
+    "task_id": "1",
+    "dependent_task_ids": [],
+    "instruction": "Request Supabase credentials from the human user. Explain that a free Supabase project is required at https://supabase.com. Ask for exactly three values: (1) Project URL (e.g. https://xxx.supabase.co), (2) anon public key (Settings > API > anon public), (3) PostgreSQL connection string in URI format (Settings > Database > Connection string > URI, Transaction pooler, port 6543, replace [YOUR-PASSWORD] with the actual db password).",
+    "task_type": "CREDENTIAL_REQUEST",
+    "tool": null,
+    "tool_args": {}
+  },
+  {
+    "task_id": "2",
+    "dependent_task_ids": [],
+    "instruction": "Request Airbyte Cloud credentials from the human user. Explain that a free Airbyte Cloud account is required at https://cloud.airbyte.com. Ask for exactly two values: (1) API key (Settings > API keys > New API key), (2) workspace ID (visible in the Airbyte Cloud URL: app.airbyte.com/workspaces/<workspace_id>).",
+    "task_type": "CREDENTIAL_REQUEST",
+    "tool": null,
+    "tool_args": {}
+  },
+  {
+    "task_id": "3",
+    "dependent_task_ids": ["1"],
+    "instruction": "Connect to the Supabase PostgreSQL DWH using the credentials received in task 1. Substitute the actual Project URL, anon key, and PostgreSQL connection string from your working memory.",
+    "task_type": "INSTANTIATION",
+    "tool": "SupabaseConnector",
+    "tool_args": {
+      "url": "SUPABASE_PROJECT_URL_FROM_TASK_1",
+      "key": "SUPABASE_ANON_KEY_FROM_TASK_1",
+      "postgres_url": "SUPABASE_POSTGRES_URL_FROM_TASK_1"
+    }
+  },
+  {
+    "task_id": "4",
+    "dependent_task_ids": ["2", "3"],
+    "instruction": "Configure the Airbyte client and create a PostgreSQL destination in Airbyte Cloud pointing to the Supabase database. Use the Airbyte API key and workspace ID from task 2. The destination_config must use destination_definition_id '25c5221d-dce2-4163-ade9-739ef790f503' (PostgreSQL). Extract the Supabase host from the postgres URL (format: db.<ref>.supabase.co), use port 5432 for the direct connection, database 'postgres', username 'postgres', password from the postgres URL, schema 'public', ssl_mode {mode: require}.",
+    "task_type": "INSTANTIATION",
+    "tool": "AirbyteConnector",
+    "tool_args": {
+      "api_key": "AIRBYTE_API_KEY_FROM_TASK_2",
+      "workspace_id": "AIRBYTE_WORKSPACE_ID_FROM_TASK_2",
+      "destination_name": "Supabase DWH",
+      "destination_definition_id": "25c5221d-dce2-4163-ade9-739ef790f503",
+      "destination_connection_config": {
+        "host": "SUPABASE_DB_HOST_FROM_TASK_1",
+        "port": 5432,
+        "database": "postgres",
+        "username": "postgres",
+        "password": "SUPABASE_DB_PASSWORD_FROM_TASK_1",
+        "schema": "public",
+        "ssl_mode": {"mode": "require"}
+      }
+    }
+  },
+  {
+    "task_id": "5",
+    "dependent_task_ids": ["4"],
+    "instruction": "Create an Airbyte Faker (Sample Data) source and a connection from that source to the Supabase destination created in task 4. The source uses definition_id 'e1ead99e-0f8e-4f56-a8e7-5f6c2bb0a7e6' (Sample Data / Faker). Configure the source to sync 3 streams: users, products, purchases. The destination_id comes from the task 4 result.",
+    "task_type": "CONNECTION_SETUP",
+    "tool": "AirbyteConnector",
+    "tool_args": {
+      "api_key": "AIRBYTE_API_KEY_FROM_TASK_2",
+      "workspace_id": "AIRBYTE_WORKSPACE_ID_FROM_TASK_2",
+      "source_config": {
+        "source_name": "Sample Data Faker",
+        "source_definition_id": "e1ead99e-0f8e-4f56-a8e7-5f6c2bb0a7e6",
+        "source_connection_config": {
+          "count": 1000,
+          "seed": 42,
+          "always_updated_fields": []
+        },
+        "destination_id": "DESTINATION_ID_FROM_TASK_4",
+        "stream_names": ["users", "products", "purchases"]
+      }
+    }
+  },
+  {
+    "task_id": "6",
+    "dependent_task_ids": ["5"],
+    "instruction": "Trigger the Airbyte sync for the connection created in task 5. Wait until the sync completes. The connection_id comes from the task 5 result. This will load the Faker users, products, and purchases tables into the Supabase public schema.",
+    "task_type": "DATA_INGESTION",
+    "tool": "AirbyteConnector",
+    "tool_args": {
+      "api_key": "AIRBYTE_API_KEY_FROM_TASK_2",
+      "workspace_id": "AIRBYTE_WORKSPACE_ID_FROM_TASK_2",
+      "connection_id": "CONNECTION_ID_FROM_TASK_5"
+    }
+  },
+  {
+    "task_id": "7",
+    "dependent_task_ids": ["1", "6"],
+    "instruction": "Configure the dbt postgres profile to connect to the Supabase PostgreSQL database. Use db_type='postgres'. Extract host (db.<ref>.supabase.co), user (postgres), password and dbname (postgres) from the Supabase credentials in task 1. Use port 5432 (direct connection) and schema 'public'.",
+    "task_type": "CONNECTION_SETUP",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "db_type": "postgres",
+      "host": "SUPABASE_DB_HOST_FROM_TASK_1",
+      "port": 5432,
+      "user": "postgres",
+      "password": "SUPABASE_DB_PASSWORD_FROM_TASK_1",
+      "dbname": "postgres",
+      "schema": "public"
+    }
+  },
+  {
+    "task_id": "8",
+    "dependent_task_ids": ["7"],
+    "instruction": "Generate and run a dbt transformation model for DIM_CUSTOMER. Source table 'users' in Supabase (loaded by Airbyte in task 6) has columns: id, name, email, gender, address, created_at, updated_at, age, company, phone, title, height, nationality. Select: id as customer_id, name, email, gender, age, company. Reference the source table as plain name 'users' (it is in the public schema targeted by the dbt profile).",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "model_name": "dim_customer"
+    }
+  },
+  {
+    "task_id": "9",
+    "dependent_task_ids": ["7"],
+    "instruction": "Generate and run a dbt transformation model for DIM_PRODUCT. Source table 'products' in Supabase (loaded by Airbyte in task 6) has columns: id, name, make, year, price, created_at, updated_at. Select: id as product_id, name as product_name, make, year, price. Reference the source table as plain name 'products'.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "model_name": "dim_product"
+    }
+  },
+  {
+    "task_id": "10",
+    "dependent_task_ids": ["7"],
+    "instruction": "Generate and run a dbt transformation model for DIM_DATE. Source table 'purchases' in Supabase (loaded by Airbyte in task 6) has a created_at timestamp column. Extract distinct dates from purchases.created_at: date_key (integer YYYYMMDD), full_date, year, month, day, day_of_week. Reference the source table as plain name 'purchases'.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "model_name": "dim_date"
+    }
+  },
+  {
+    "task_id": "11",
+    "dependent_task_ids": ["8", "9", "10"],
+    "instruction": "Generate and run a dbt transformation model for FACT_PURCHASES. Source table 'purchases' in Supabase (loaded by Airbyte in task 6) has columns: id, user_id, product_id, quantity, total, store_name, store_id, store_longitude, store_latitude, created_at, updated_at. Select: id as purchase_id, user_id as customer_id, product_id, quantity, total as revenue, store_name, created_at::date as purchase_date. Reference the source table as plain name 'purchases'.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "model_name": "fact_purchases"
+    }
+  }
+]

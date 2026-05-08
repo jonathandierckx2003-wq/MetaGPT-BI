@@ -29,8 +29,10 @@ For CONNECTION_SETUP tasks:
 For CREDENTIAL_REQUEST tasks:
 1. Do not call BIAnalyticsEngineer.execute_BI_task. Instead, call RoleZero.ask_human with a message that:
    a. Names the external service that will be used (e.g. Supabase, Airbyte Cloud).
-   b. If the service requires a cloud account, explains this upfront and provides the signup URL so the user can create a free account before supplying credentials (e.g. "Please create a free Supabase project at https://supabase.com, then reply with your Project URL, anon key, and PostgreSQL connection string.").
-   c. Lists every specific credential or connection detail that is needed (field by field).
+   b. If the service requires a cloud account that the user may not have yet, explain this upfront with clear account-creation instructions BEFORE asking for credentials. Include the signup URL and the exact steps needed. Examples:
+      - Supabase: "Please create a free Supabase project at https://supabase.com (sign up → New project). Once created, go to Settings > Database and copy: (1) Project URL, (2) anon public key (Settings > API), (3) PostgreSQL connection string (use the URI format, Transaction pooler, port 6543, replace [YOUR-PASSWORD] with your db password)."
+      - Airbyte Cloud: "Please create a free Airbyte Cloud account at https://cloud.airbyte.com (sign up → create workspace). Once inside, go to Settings > API keys to create an API key. Your workspace ID is visible in the URL: app.airbyte.com/workspaces/<workspace_id>."
+   c. Lists every specific credential or connection detail that is needed (field by field), so the user knows exactly what to supply.
 2. Store the received credential in your working memory for use in subsequent tasks that depend on it.
 3. Mark complete only after the credential has been received and stored.
 

@@ -1196,4 +1196,76 @@ Correct Table 6's tools list to match: `["RoleZero", "Editor", "BIAnalyticsEngin
 
 ## Session 7 deviations
 
-*(To be filled in during Session 7)*
+### DEV-46 — `_run_airbyte()` DATA_INGESTION: `trigger_sync()` return value not extracted before `wait_for_sync()`
+
+**Bug found:** `_run_airbyte()` in `bi_analytics_engineer.py` called `connector.trigger_sync(connection_id)` and immediately passed the return value to `connector.wait_for_sync(job_id)`. But `trigger_sync()` returns a dict `{"job_id": ..., "status": ...}`, not a bare string. `wait_for_sync()` expects a string job_id, causing a type error at runtime.
+
+**Fix:** Extract `job_id` from the dict before calling `wait_for_sync()`:
+```python
+trigger_result = connector.trigger_sync(connection_id)
+job_id = str(trigger_result["job_id"])
+return str(connector.wait_for_sync(job_id))
+```
+
+**Why:** Implementation error in the original `_run_airbyte()` code — `trigger_sync()` was modelled after a two-step API (trigger → poll), but the return type was not checked when writing the dispatch method.
+
+**Files changed:** `metagpt/roles/bi/bi_analytics_engineer.py`
+
+---
+
+### DEV-47 — `AirbyteConnector` lacked `create_destination()` method; `_run_airbyte()` had no INSTANTIATION handler
+
+**Theoretical design:** The spec and thesis describe INSTANTIATION tasks for Airbyte (configure client + create destination). The `setup_connection()` method already existed but required a `destination_id` for a pre-existing destination — there was no way to create the destination via API.
+
+**Implementation:**
+1. Added `AirbyteConnector.create_destination(destination_config: dict) -> dict` — uses the Airbyte API Platform v2 `POST /destinations` endpoint. Expects `destination_name`, `destination_definition_id`, and `destination_connection_config` in the config dict. Known definition ID for PostgreSQL/Supabase: `25c5221d-dce2-4163-ade9-739ef790f503`. If the API call fails (wrong definition ID, network error, permissions), raises `RuntimeError` with a MANUAL FALLBACK message instructing the human user to create the destination in the Airbyte Cloud UI and supply the `destination_id`.
+
+2. Added `INSTANTIATION` case to `_run_airbyte()` — dispatches to `connector.create_destination()` passing `tool_args` (or `tool_args["destination_config"]` if nested).
+
+**Why:** Without `create_destination()`, the Supabase scenario would require manual Airbyte UI setup before the execution plan could run. The human fallback message ensures robustness if the API call fails.
+
+**Design note (Gap 1 fallback):** Per the user's direction, the fallback error message from `create_destination()` provides clear step-by-step instructions for manually creating the destination in Airbyte Cloud UI. The agent (Alex) will observe this error in the ReAct loop and forward the instructions to the human user via `RoleZero.ask_human`.
+
+**Files changed:** `metagpt/tools/bi/airbyte_connector.py`, `metagpt/roles/bi/bi_analytics_engineer.py`
+
+---
+
+### DEV-48 — `_run_dbt()` CONNECTION_SETUP extended to support postgres profile configuration
+
+**Theoretical design:** The thesis and spec describe tool extensibility as a goal. The `_run_dbt()` CONNECTION_SETUP path previously only called `attach_project(project_dir)` — it had no way to configure a postgres profile for the Supabase scenario.
+
+**Implementation:** Added a `db_type='postgres'` branch in `_run_dbt()` CONNECTION_SETUP:
+- If `tool_args["db_type"] == "postgres"`, auto-init the project if needed, then call `dbt.configure_profile(db_type="postgres", ...)` with postgres credentials from `tool_args`.
+- If `db_type` is absent, the existing `attach_project()` path is used (DuckDB scenario).
+
+The TRANSFORMATION branch's auto-configure guard already checks if `profiles.yml` exists before writing a DuckDB profile — so this CONNECTION_SETUP task must run before the first TRANSFORMATION task in the Supabase plan, ensuring the postgres profile is written and the DuckDB auto-configure is skipped.
+
+**Limitation (Gap 3 — noted for thesis):** The `_run_dbt()` auto-configure in the TRANSFORMATION branch hardcodes `db_type="duckdb"`. This means if no CONNECTION_SETUP task configures the postgres profile first, TRANSFORMATION tasks would silently fall back to DuckDB config. This is an extensibility limitation: adding support for a new DWH backend requires both (a) a new `_run_<tool>()` method in `bi_analytics_engineer.py` and (b) awareness of the profile configuration order in the execution plan. This is documented as a design limitation in the thesis Limitations section (ref: DEV-43 on extensibility steps).
+
+**Files changed:** `metagpt/roles/bi/bi_analytics_engineer.py`
+
+---
+
+### DEV-49 — `airbyte-api` package removed during `dbt-postgres` installation due to `protobuf` conflict; reinstalled manually
+
+**Issue found during Session 7 smoke tests:** Installing `dbt-postgres` upgraded `protobuf` to version 6.33.6. This was incompatible with `airbyte-api 0.53.0`'s `grpcio-tools` dependency (which required `protobuf<5.0`). The pip resolver removed `airbyte-api` from the environment as a result. This caused `ModuleNotFoundError: No module named 'airbyte_api'` during the Session 7 smoke tests.
+
+**Fix:** Manually reinstalled `airbyte-api==0.53.0` after dbt-postgres installation. The two packages now coexist with a `protobuf` conflict warning (not error) — `grpcio-tools 1.62.3` warns about incompatible `protobuf 6.33.6`, but `airbyte_api` itself imports cleanly since it doesn't directly use the conflicting gRPC features at runtime.
+
+**Note for future installations:** When installing new packages, verify `airbyte_api` still imports: `python -c "import airbyte_api; print('OK')"`. If it fails, run `pip install "airbyte-api==0.53.0"` to restore it.
+
+**Files changed:** Python environment only (no code changes)
+
+---
+
+### LIM-01 update — Airbyte with cloud API sources (Faker) IS supported; original limitation was specific to local CSV files
+
+**Original LIM-01:** PandasLoader is DuckDB-specific; Supabase scenario must use AirbyteConnector for ingestion.
+
+**Update (Session 7):** The original concern about Airbyte not supporting local CSV files was correct for Airbyte Cloud — Airbyte Cloud only supports cloud-to-cloud connectors and cannot ingest local filesystem files. However, Airbyte CAN be used with cloud API sources such as the built-in "Sample Data (Faker)" connector. Session 7 tests the Airbyte Faker → Supabase scenario, which is a fully cloud-native, Airbyte-supported scenario. LIM-01 is therefore refined as follows:
+
+- **Airbyte Cloud + local CSV files**: NOT supported (as originally noted). Use PandasLoader (DuckDB only) or a direct PostgreSQL loader instead.
+- **Airbyte Cloud + cloud API sources (Faker, S3, GCS, APIs)**: SUPPORTED, as demonstrated in Session 7.
+- **PandasLoader + Supabase/PostgreSQL**: NOT implemented. PandasLoader uses DuckDB's native DataFrame ingestion. For PostgreSQL targets, a `PostgresLoader` tool class would be needed (future improvement).
+
+**Files changed:** None (documentation only)

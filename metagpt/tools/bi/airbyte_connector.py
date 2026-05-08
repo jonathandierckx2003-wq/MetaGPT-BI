@@ -58,6 +58,79 @@ class AirbyteConnector:
             raise RuntimeError("Airbyte client not configured. Call configure() first.")
         return self._client
 
+    def create_destination(self, destination_config: dict[str, Any]) -> dict[str, Any]:
+        """Create an Airbyte destination (e.g. PostgreSQL / Supabase) and return its ID.
+
+        The `destination_config` dict must contain:
+          - 'destination_name' (str): Display name for the destination.
+          - 'destination_definition_id' (str): Airbyte destination type UUID.
+            PostgreSQL / Supabase: '25c5221d-dce2-4163-ade9-739ef790f503'
+          - 'destination_connection_config': Connector-specific configuration dict.
+            For PostgreSQL / Supabase::
+
+                {
+                    "host": "db.<ref>.supabase.co",
+                    "port": 5432,
+                    "database": "postgres",
+                    "username": "postgres",
+                    "password": "<your_db_password>",
+                    "schema": "public",
+                    "ssl_mode": {"mode": "require"},
+                }
+
+        If the API call fails (e.g. wrong definition ID), raises RuntimeError with
+        manual-setup instructions so the human user can create the destination in the
+        Airbyte Cloud UI and supply the destination_id.
+
+        Returns:
+            Dict with 'destination_id' and 'name'.
+
+        Example destination_config::
+
+            {
+                "destination_name": "Supabase DWH",
+                "destination_definition_id": "25c5221d-dce2-4163-ade9-739ef790f503",
+                "destination_connection_config": {
+                    "host": "db.xxx.supabase.co",
+                    "port": 5432,
+                    "database": "postgres",
+                    "username": "postgres",
+                    "password": "...",
+                    "schema": "public",
+                    "ssl_mode": {"mode": "require"},
+                },
+            }
+        """
+        import airbyte_api.models as models
+
+        client = self._require_client()
+        try:
+            resp = client.destinations.create_destination(
+                request=models.DestinationCreateRequest(
+                    workspace_id=self._workspace_id,
+                    name=destination_config["destination_name"],
+                    definition_id=destination_config["destination_definition_id"],
+                    configuration=destination_config["destination_connection_config"],
+                )
+            )
+            destination_id = resp.destination_response.destination_id
+            return {
+                "destination_id": destination_id,
+                "name": destination_config["destination_name"],
+                "status": "created",
+            }
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to create Airbyte destination via API: {exc}. "
+                "MANUAL FALLBACK: Please create a PostgreSQL destination in the Airbyte Cloud UI: "
+                "1. Go to cloud.airbyte.com → Destinations → New destination. "
+                "2. Search for 'PostgreSQL' and select it. "
+                "3. Fill in your Supabase host, port (5432), database (postgres), "
+                "username (postgres), password, schema (public), SSL mode (require). "
+                "4. Save and copy the destination ID from the destination detail page URL. "
+                "Then supply that destination_id to the agent."
+            ) from exc
+
     def setup_connection(self, source_config: dict[str, Any]) -> dict[str, Any]:
         """Create an Airbyte source and connection pointing at an existing destination.
 
