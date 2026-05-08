@@ -30,32 +30,72 @@ class AirbyteConnector:
         self._client = None
         self._workspace_id: str | None = None
 
-    def configure(self, api_key: str, workspace_id: str, base_url: str | None = None) -> str:
-        """Initialise the Airbyte API client.
+    def configure(
+        self,
+        client_id: str,
+        client_secret: str,
+        workspace_id: str,
+        base_url: str | None = None,
+    ) -> str:
+        """Initialise the Airbyte API client using OAuth2 client credentials.
+
+        Performs the client-credentials token exchange manually (POST to
+        /applications/token) so we are not dependent on the SDK's built-in
+        OAuth2 handling, which proved unreliable in practice (DEV-55).
 
         Args:
-            api_key: Airbyte API key (from Airbyte Cloud or self-hosted admin UI).
-            workspace_id: Airbyte workspace ID (visible in the Airbyte UI URL).
-            base_url: Base URL of the Airbyte API. Defaults to Airbyte Cloud.
-                      For self-hosted: 'http://localhost:8000' (or your server URL).
+            client_id: Application client ID (Airbyte Cloud > User Settings >
+                       Applications > your application).
+            client_secret: Application client secret.
+            workspace_id: Airbyte workspace ID (visible in the Airbyte Cloud URL).
+            base_url: Override the Airbyte API base URL.
+                      Defaults to 'https://api.airbyte.com/v1'.
 
         Returns:
             Confirmation string.
         """
-        import airbyte_api
+        import requests as _requests
         from airbyte_api import AirbyteAPI
+        from airbyte_api.models import Security
 
-        kwargs: dict[str, Any] = {"api_key": api_key}
-        if base_url:
-            kwargs["server_url"] = base_url
+        api_base = (base_url or "https://api.airbyte.com/v1").rstrip("/")
+        token_url = f"{api_base}/applications/token"
 
-        self._client = AirbyteAPI(**kwargs)
+        resp = _requests.post(
+            token_url,
+            json={
+                "grant_type": "client_credentials",
+                "client_id": client_id,
+                "client_secret": client_secret,
+            },
+            headers={"Content-Type": "application/json"},
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"Airbyte token exchange failed (HTTP {resp.status_code}): {resp.text}. "
+                "Verify the client_id and client_secret in Airbyte Cloud > "
+                "User Settings > Applications."
+            )
+
+        access_token = resp.json().get("access_token") or resp.json().get("accessToken")
+        if not access_token:
+            raise RuntimeError(
+                f"Airbyte token response missing 'access_token' field: {resp.text}"
+            )
+
+        self._client = AirbyteAPI(
+            security=Security(bearer_auth=access_token),
+            server_url=api_base,
+        )
         self._workspace_id = workspace_id
         return f"Airbyte client configured (workspace: {workspace_id})."
 
     def _require_client(self) -> Any:
         if self._client is None:
-            raise RuntimeError("Airbyte client not configured. Call configure() first.")
+            raise RuntimeError(
+                "Airbyte client not configured. Call configure(client_id, client_secret, workspace_id) first."
+            )
         return self._client
 
     def create_destination(self, destination_config: dict[str, Any]) -> dict[str, Any]:
@@ -131,41 +171,65 @@ class AirbyteConnector:
                 "Then supply that destination_id to the agent."
             ) from exc
 
+    # Maps lowercase source_type strings to the SDK's typed SourceXxx dataclass.
+    # The Airbyte Cloud Public API v1 dropped support for definitionId on standard
+    # sources (STANDARD_SOURCE_DEFINITION 404); callers must use sourceType instead.
+    _SOURCE_TYPE_MAP: dict[str, str] = {
+        "faker": "SourceFaker",
+    }
+
     def setup_connection(self, source_config: dict[str, Any]) -> dict[str, Any]:
         """Create an Airbyte source and connection pointing at an existing destination.
 
         The `source_config` dict must contain:
-          - 'source_definition_id' (str): Airbyte source definition ID.
+          - 'source_type' (str): Lowercase connector type (e.g. 'faker').
+            Preferred for standard Airbyte Cloud connectors — maps to the SDK's
+            typed SourceXxx dataclass so no definitionId is needed.
           - 'source_name' (str): Display name for the source.
-          - 'source_connection_config': Connector-specific configuration object
-            (use the appropriate airbyte_api.models.Source* dataclass or a plain dict).
+          - 'source_connection_config': Dict of connector-specific params.
           - 'destination_id' (str): ID of an already-existing Airbyte destination.
           - 'stream_names' (list[str], optional): Subset of stream names to sync.
-            Omit to sync all available streams.
 
         Returns:
             Dict with 'source_id', 'connection_id', and 'streams' (list synced).
 
-        Example source_config::
+        Example source_config for Faker::
 
             {
-                "source_definition_id": "778daa7c-feaf-4db6-96f3-70fd645acc77",
-                "source_name": "Sales CSV",
-                "source_connection_config": <SourceCsv instance or config dict>,
+                "source_type": "faker",
+                "source_name": "Sample Data Faker",
+                "source_connection_config": {"count": 1000, "seed": 42},
                 "destination_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-                "stream_names": ["sales"],
+                "stream_names": ["users", "products", "purchases"],
             }
         """
         import airbyte_api.models as models
 
         client = self._require_client()
 
+        # Build typed configuration when source_type is known; fall back to
+        # definition_id for private/custom connectors that still use that path.
+        src_type = source_config.get("source_type", "").lower()
+        cfg_params = source_config.get("source_connection_config") or {}
+        if src_type in self._SOURCE_TYPE_MAP:
+            cls_name = self._SOURCE_TYPE_MAP[src_type]
+            cfg_cls = getattr(models, cls_name)
+            # Build only with params the dataclass actually accepts
+            import dataclasses
+            valid_fields = {f.name for f in dataclasses.fields(cfg_cls)}
+            filtered = {k: v for k, v in cfg_params.items() if k in valid_fields}
+            configuration = cfg_cls(**filtered)
+            definition_id = None
+        else:
+            configuration = cfg_params
+            definition_id = source_config.get("source_definition_id")
+
         source_resp = client.sources.create_source(
             request=models.SourceCreateRequest(
                 workspace_id=self._workspace_id,
                 name=source_config["source_name"],
-                definition_id=source_config["source_definition_id"],
-                configuration=source_config["source_connection_config"],
+                configuration=configuration,
+                definition_id=definition_id,
             )
         )
         source_id = source_resp.source_response.source_id
@@ -202,23 +266,40 @@ class AirbyteConnector:
     def trigger_sync(self, connection_id: str) -> dict[str, Any]:
         """Trigger an Airbyte sync job for an existing connection.
 
+        If a sync is already running for the connection (HTTP 409), the running
+        job is fetched and returned so wait_for_sync() can poll it without
+        triggering a duplicate (DEV-56).
+
         Args:
             connection_id: Airbyte connection ID returned by setup_connection().
 
         Returns:
-            Dict with 'job_id' and 'status' (initial status, usually 'pending').
+            Dict with 'job_id' and 'status'.
         """
+        import airbyte_api.api.listjobs as lj
         import airbyte_api.models as models
 
         client = self._require_client()
-        resp = client.jobs.create_job(
-            request=models.JobCreateRequest(
-                connection_id=connection_id,
-                job_type=models.JobTypeEnum.SYNC,
+        try:
+            resp = client.jobs.create_job(
+                request=models.JobCreateRequest(
+                    connection_id=connection_id,
+                    job_type=models.JobTypeEnum.SYNC,
+                )
             )
-        )
-        job = resp.job_response
-        return {"job_id": job.job_id, "status": job.status}
+            job = resp.job_response
+            return {"job_id": job.job_id, "status": job.status}
+        except Exception as exc:
+            if "409" in str(exc) or "already running" in str(exc).lower():
+                # A sync is already in progress — find it and return its job_id
+                list_resp = client.jobs.list_jobs(
+                    request=lj.ListJobsRequest(connection_id=connection_id, limit=1)
+                )
+                jobs = list_resp.jobs_response.data if list_resp.jobs_response else []
+                if jobs:
+                    running = jobs[0]
+                    return {"job_id": running.job_id, "status": running.status}
+            raise
 
     def get_sync_status(self, job_id: str) -> dict[str, Any]:
         """Check the current status of an Airbyte sync job.
@@ -236,8 +317,10 @@ class AirbyteConnector:
         """
         import airbyte_api.models as models
 
+        import airbyte_api.api.getjob as gj
+
         client = self._require_client()
-        resp = client.jobs.get_job(job_id=int(job_id))
+        resp = client.jobs.get_job(request=gj.GetJobRequest(job_id=int(job_id)))
         job = resp.job_response
         status_value = job.status.value if hasattr(job.status, "value") else str(job.status)
         return {"job_id": job_id, "status": status_value}

@@ -82,7 +82,7 @@ class TestAirbyteConnectorCreateDestination(unittest.TestCase):
                 "destination_definition_id": "xxx",
                 "destination_connection_config": {},
             })
-        self.assertIn("configure()", str(ctx.exception))
+        self.assertIn("configure(", str(ctx.exception))
 
     def test_create_destination_api_failure_raises_runtime_error_with_manual_instructions(self):
         """If the Airbyte API call fails, RuntimeError must include manual-setup instructions."""
@@ -118,7 +118,7 @@ class TestRunAirbyteFixes(unittest.TestCase):
 
         with patch("metagpt.roles.bi.bi_analytics_engineer.AirbyteConnector", return_value=mock_connector):
             result = self.agent._run_airbyte("DATA_INGESTION", {
-                "api_key": "k", "workspace_id": "ws",
+                "client_id": "cid", "client_secret": "cs", "workspace_id": "ws",
                 "connection_id": "conn-123",
             })
 
@@ -136,7 +136,8 @@ class TestRunAirbyteFixes(unittest.TestCase):
 
         with patch("metagpt.roles.bi.bi_analytics_engineer.AirbyteConnector", return_value=mock_connector):
             result = self.agent._run_airbyte("INSTANTIATION", {
-                "api_key": "k",
+                "client_id": "cid",
+                "client_secret": "cs",
                 "workspace_id": "ws",
                 "destination_name": "Supabase DWH",
                 "destination_definition_id": "25c5221d-dce2-4163-ade9-739ef790f503",
@@ -155,7 +156,7 @@ class TestRunAirbyteFixes(unittest.TestCase):
 
         with patch("metagpt.roles.bi.bi_analytics_engineer.AirbyteConnector", return_value=mock_connector):
             self.agent._run_airbyte("CONNECTION_SETUP", {
-                "api_key": "k", "workspace_id": "ws",
+                "client_id": "cid", "client_secret": "cs", "workspace_id": "ws",
                 "source_config": {
                     "source_name": "Faker",
                     "source_definition_id": "e1ead99e-0f8e-4f56-a8e7-5f6c2bb0a7e6",

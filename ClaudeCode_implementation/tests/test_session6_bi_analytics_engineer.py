@@ -243,9 +243,10 @@ class TestExecuteBITask(unittest.IsolatedAsyncioTestCase):
         task = _make_task("99", "CREDENTIAL_REQUEST", None, None)
         result = await agent.execute_BI_task(task)
 
-        # Should return the redirect message, not crash or dispatch to a tool
-        self.assertIn("ask_human", result)
-        self.assertIn("COMPLETE", result)  # it completes (the redirect is the result)
+        # DEV-50: CREDENTIAL_REQUEST now returns an acknowledgment (credentials pre-injected)
+        # rather than an ask_human redirect; task is still marked COMPLETE.
+        self.assertIn("CREDENTIAL_REQUEST", result)
+        self.assertIn("COMPLETE", result)
         self.assertIn("99", agent._completed_task_ids)
 
     async def test_unknown_tool_returns_error_string(self):

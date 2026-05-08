@@ -18,7 +18,7 @@ A transposition of the MetaGPT Software Company multi-agent system into the Busi
 | 4 | BIDataModeler (Agent 2) + standalone test + live e2e test | ✅ Complete |
 | 5 | BISolutionArchitect (Agent 3) + standalone test + live e2e test | ✅ Complete |
 | 6 | BIAnalyticsEngineer (Agent 4) + standalone test + live e2e test (DuckDB scenario) | ✅ Complete |
-| 7 | Scenario 2 live test: Supabase + Airbyte + dbt-postgres (requires accounts — see LIM-01) | ⏳ Pending |
+| 7 | Scenario 2 live test: Supabase + Airbyte + dbt-postgres (requires accounts — see LIM-01) | ✅ Complete |
 | 8 | BIQAEngineer (Agent 5) + bi_team.py + end-to-end test | ⏳ Pending |
 
 ---
@@ -182,10 +182,11 @@ Wraps the `airbyte-api` Python SDK (v0.53.0) for Airbyte Cloud and self-hosted i
 
 | Method | Description |
 |--------|-------------|
-| `configure(api_key, workspace_id, base_url?)` | Initialise Airbyte API client |
-| `setup_connection(source_config)` | Create source + connection pointing to an existing destination |
-| `trigger_sync(connection_id)` | Start a sync job; returns `job_id` |
-| `get_sync_status(job_id)` | Poll job status (pending / running / succeeded / failed / cancelled) |
+| `configure(client_id, client_secret, workspace_id, base_url?)` | Initialise Airbyte API client via manual OAuth2 token exchange (DEV-55) |
+| `create_destination(destination_config)` | Create an Airbyte destination (e.g. PostgreSQL/Supabase); raises RuntimeError with manual-setup instructions on API failure (DEV-47) |
+| `setup_connection(source_config)` | Create source (via typed `source_type` config or `source_definition_id`) + connection pointing to an existing destination (DEV-58) |
+| `trigger_sync(connection_id)` | Start a sync job; returns `{"job_id": ..., "status": ...}`; recovers from 409 "already running" by fetching active job (DEV-56) |
+| `get_sync_status(job_id)` | Poll job status (pending / running / succeeded / failed / cancelled); uses `GetJobRequest` wrapper (DEV-57) |
 | `wait_for_sync(job_id)` | Blocking poll until terminal state (used when LLM doesn't need to interleave) |
 | `list_connections()` | List all connections in the configured workspace |
 
@@ -720,6 +721,12 @@ The following table summarises differences between the thesis description (secti
 | DEV-47 | `AirbyteConnector` lacked `create_destination()`; `_run_airbyte()` had no INSTANTIATION handler. Both added; fallback error message guides human user to create destination manually in Airbyte Cloud UI if API call fails. |
 | DEV-48 | `_run_dbt()` CONNECTION_SETUP extended to support `db_type='postgres'` — initialises project and calls `configure_profile(db_type='postgres', ...)` from `tool_args`. DuckDB path unchanged. Extensibility limitation noted for thesis (DEV-43 ref). |
 | DEV-49 | `airbyte-api` package removed by pip during `dbt-postgres` install (protobuf version conflict). Reinstalled manually. Note for future: verify with `python -c "import airbyte_api"` after any new package installs. |
+| DEV-50 | Credential pre-injection + placeholder substitution: `inject_credentials()`, `_substitute_placeholders()`, `_extract_task_result()` added to `BIAnalyticsEngineer`; CREDENTIAL_REQUEST tasks return acknowledgment without dispatch; run script collects all credentials before `team.run()`. |
+| DEV-51 | `execution_plan_supabase.json` updated: task 2 asks for `client_id`/`client_secret`/`workspace_id`; tasks 4/5/6 `api_key` → `client_id`+`client_secret`; task 5 `source_definition_id` → `source_type: "faker"`; Supabase/Airbyte credential navigation instructions corrected. |
+| DEV-55 | `AirbyteConnector.configure()` reworked: SDK `api_key` kwarg removed; manual OAuth2 token exchange (POST to `/applications/token`) replaces SDK's unreliable built-in auth. Signature: `configure(client_id, client_secret, workspace_id, base_url?)`. |
+| DEV-56 | `AirbyteConnector.trigger_sync()` HTTP 409 recovery: when sync already running, fetches active job via `list_jobs()` and returns its `job_id` instead of raising. |
+| DEV-57 | `AirbyteConnector.get_sync_status()` wrong kwarg fixed: `get_job(job_id=...)` → `get_job(request=GetJobRequest(job_id=int(job_id)))`. Same pattern for `list_jobs()` which requires `ListJobsRequest` wrapper. |
+| DEV-58 | `AirbyteConnector.setup_connection()` source type fix: Airbyte Cloud v1 API dropped `definitionId` for standard connectors (HTTP 404). Added `_SOURCE_TYPE_MAP` + typed `SourceFaker` config object for `source_type="faker"`. Private connectors still use `source_definition_id` path. |
 | LIM-01 update | Airbyte with cloud API sources (Faker, S3, etc.) IS supported and tested in Session 7. Original limitation was specific to local CSV files which Airbyte Cloud cannot ingest. |
 
 ### Prompt improvements added during Session 7
@@ -757,16 +764,17 @@ The following table summarises differences between the thesis description (secti
 - `dim_date`: date_key, full_date, year, month, day, day_of_week
 - `fact_purchases`: purchase_id, customer_id, product_id, quantity, revenue, store_name, purchase_date
 
-**Airbyte Faker source definition ID:** `e1ead99e-0f8e-4f56-a8e7-5f6c2bb0a7e6`  
+**Airbyte Faker source:** specified via `source_type: "faker"` (not `definitionId` — Airbyte Cloud v1 API dropped definitionId for standard connectors, see DEV-58)  
 **PostgreSQL destination definition ID:** `25c5221d-dce2-4163-ade9-739ef790f503`
 
 ### Smoke test results
 
 **Test file:** `ClaudeCode_implementation/tests/test_session7_scenario2.py`
 
-**20/20 tests pass.** Test classes:
+**27/27 tests pass.** Test classes:
 - `TestAirbyteConnectorCreateDestination` (4 tests): method existence, signature, client-not-configured error, API-failure RuntimeError with manual fallback message
 - `TestRunAirbyteFixes` (3 tests): DEV-46 job_id extraction, DEV-47 INSTANTIATION dispatch, CONNECTION_SETUP does not call create_destination
+- `TestDEV50CredentialInjection` (7 tests): inject_credentials stores values, _substitute_placeholders direct lookup, nested dict substitution, task result substitution, connection_id substitution, unknown placeholder unchanged, CREDENTIAL_REQUEST dispatch returns acknowledgment
 - `TestRunDbtPostgresProfile` (2 tests): DEV-48 postgres configure_profile call, DuckDB fallback path unchanged
 - `TestDbtPostgresInstalled` (1 test): dbt.adapters.postgres importable
 - `TestSupabaseExecutionPlan` (10 tests): file exists, valid JSON, required task types, required fields, tools present, 4 TRANSFORMATION models, CREDENTIAL_REQUEST null tool, dependency order, dbt task has db_type=postgres, Airbyte task has destination_definition_id
@@ -776,19 +784,42 @@ The following table summarises differences between the thesis description (secti
 **Test file:** `ClaudeCode_implementation/tests/run_session7_live.py`  
 **LLM:** gpt-5.4-mini (same as Sessions 3-6)  
 **Budget:** 100 rounds  
-**Status:** ⏳ Pending live run — requires Supabase + Airbyte Cloud credentials from user
+**Status:** ✅ COMPLETE — all 11 tasks succeeded on final run (2026-05-08)
 
-**Pre-requisites for live run:**
-1. Supabase free project: supabase.com → provide Project URL, anon key, PostgreSQL connection string
-2. Airbyte Cloud free account: cloud.airbyte.com → provide API key + workspace ID
+**Run history:**
+
+| Run | Result | Root cause of failure |
+|-----|--------|-----------------------|
+| Run 1 | FAILED — Task 4 | `AirbyteAPI.__init__()` got unexpected kwarg `api_key`; Security wrapper required |
+| Run 2 | FAILED — Task 4 | SDK `SchemeClientCredentials` returned HTTP 401; manual OAuth2 exchange needed (DEV-55) |
+| Run 3 | FAILED — Task 5 | HTTP 404 `STANDARD_SOURCE_DEFINITION` for Faker `definitionId`; `source_type` required (DEV-58) |
+| Run 4 | FAILED — Task 6 | `get_job(job_id=...)` wrong kwarg → crash → 409 retry loop (DEV-57 + DEV-56) |
+| Run 5 | **SUCCESS** | All DEV-55 through DEV-58 fixes applied |
+
+**Run 5 final results:**
+```
+[OK] workspace\docs\execution_report.md  (3,100+ bytes)
+     Tasks marked COMPLETE in report: 11
+[OK] dbt project at dbt_projects/bi_dwh/
+     SQL models written: dim_customer.sql, dim_product.sql, dim_date.sql, fact_purchases.sql
+```
+
+**Supabase tables created:**
+- Staging (by Airbyte): `users`, `products`, `purchases` (1,000 rows each)
+- Dimensional (by dbt): `dim_customer`, `dim_product`, `dim_date`, `fact_purchases`
+
+**Self-correction behaviour:** Tasks 8, 9, 11 (TRANSFORMATION) initially failed due to schema mismatches between execution plan assumptions and actual Faker column names. Alex's ReAct loop diagnosed each failure, rewrote the SQL via `DbtRunner.write_model()`, and retried successfully — demonstrating the correction loop working as designed.
 
 ### Cross-session impact of Session 7
 
 | Area | Impact |
 |------|--------|
-| `metagpt/tools/bi/airbyte_connector.py` (Session 2) | **Changed** (DEV-47) — `create_destination()` added. Session 2 smoke tests do not test `create_destination` directly; no regression. |
-| `metagpt/roles/bi/bi_analytics_engineer.py` (Session 6) | **Changed** (DEV-46, DEV-47, DEV-48) — `_run_airbyte()` bug fix + INSTANTIATION handler + DbtRunner CONNECTION_SETUP postgres support. Session 6 smoke tests (32/32) not re-run but changes are additive — DuckDB dispatch paths unchanged. |
-| `metagpt/prompts/bi/bi_analytics_engineer.py` (Session 6) | **Changed** — CREDENTIAL_REQUEST step enhanced with account-creation instructions. |
+| `metagpt/tools/bi/airbyte_connector.py` (Session 2) | **Changed** (DEV-47, DEV-55, DEV-56, DEV-57, DEV-58) — `create_destination()` added; `configure()` reworked (OAuth2 token exchange, signature change); `setup_connection()` updated with `_SOURCE_TYPE_MAP` + `SourceFaker`; `trigger_sync()` 409 recovery; `get_sync_status()` `GetJobRequest` wrapper. Session 2 smoke tests do not cover live API behaviour; no regression in unit tests. |
+| `metagpt/roles/bi/bi_analytics_engineer.py` (Session 6) | **Changed** (DEV-46, DEV-47, DEV-48, DEV-50) — `_run_airbyte()` job_id extraction fix + INSTANTIATION handler + DbtRunner CONNECTION_SETUP postgres support + `inject_credentials()` / `_substitute_placeholders()` / `_extract_task_result()` added. Session 6 DuckDB dispatch paths unchanged — 32/32 smoke tests unaffected. |
+| `metagpt/prompts/bi/bi_analytics_engineer.py` (Session 6) | **Changed** — CREDENTIAL_REQUEST step enhanced with step-by-step account-creation instructions for Supabase and Airbyte Cloud. |
+| `ClaudeCode_implementation/tests/test_session6_bi_analytics_engineer.py` (Session 6) | **Fixed** — `test_credential_request_returns_redirect_without_dispatch`: assertion updated from `assertIn("ask_human", result)` to `assertIn("CREDENTIAL_REQUEST", result)` — DEV-50 changed CREDENTIAL_REQUEST to return an acknowledgment string rather than an ask_human redirect. 32/32 tests still pass. |
+| `ClaudeCode_implementation/tests/test_session7_scenario2.py` | Updated — `TestDEV50CredentialInjection` (7 new tests) added; total 27/27 pass. |
+| `ClaudeCode_implementation/tests/run_session7_live.py` | Updated — `_collect_credentials()` asks for `client_id`/`client_secret`/`workspace_id` (was `api_key`); returns 9 credential values; Session pooler URI instructions corrected; DEV-50 credential injection wired. |
 | All Sessions 1–5 files | No impact. |
 
 ---

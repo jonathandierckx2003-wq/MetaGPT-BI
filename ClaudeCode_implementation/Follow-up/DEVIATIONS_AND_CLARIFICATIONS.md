@@ -1269,3 +1269,225 @@ The TRANSFORMATION branch's auto-configure guard already checks if `profiles.yml
 - **PandasLoader + Supabase/PostgreSQL**: NOT implemented. PandasLoader uses DuckDB's native DataFrame ingestion. For PostgreSQL targets, a `PostgresLoader` tool class would be needed (future improvement).
 
 **Files changed:** None (documentation only)
+
+---
+
+## Session 7 live test deviations
+
+### DEV-50 — Credential pre-injection + placeholder substitution pattern
+
+**Discovered during:** Session 7 planning (DEV-50 was pre-logged; implementation confirmed correct during live run).
+
+**Problem:**
+`team.run()` is a batch async loop with no stdin injection mechanism between rounds. When CREDENTIAL_REQUEST tasks tried to collect credentials from inside the agent loop (via `RoleZero.ask_human`), the agent would pause, wait for stdin, block the entire async loop, and then resume — but `ask_human` in an async context proved unreliable for multi-value credential collection. The run also had no way to pass collected values back into subsequent task `tool_args` (which contained literal placeholder strings like `"AIRBYTE_CLIENT_ID_FROM_TASK_2"`).
+
+**Implementation:**
+
+Three changes to `BIAnalyticsEngineer`:
+
+1. **`inject_credentials(credentials: dict[str, str])`** — public method called by the run script before `team.run()`. Stores credential values keyed by placeholder name (e.g. `"AIRBYTE_CLIENT_ID_FROM_TASK_2": "abc-123"`).
+
+2. **`_substitute_placeholders(obj)`** — recursive resolver. Before each task dispatch, `tool_args` is passed through this method. It handles:
+   - Direct key lookup in `self._credentials` (e.g. `"SUPABASE_PROJECT_URL_FROM_TASK_1"` → project URL string).
+   - Pattern `"KEY_FROM_TASK_N"` — looks up task N's stored result dict for a field whose name matches the prefix (e.g. `"DESTINATION_ID_FROM_TASK_4"` → `self._task_results["4"]["destination_id"]`).
+   - Recursive traversal of nested dicts and lists — all placeholder strings are resolved regardless of nesting depth.
+   - Non-matching strings returned unchanged.
+
+3. **`_extract_task_result(task_id, result)`** — after each successful dispatch, parses the result string as a dict (via `ast.literal_eval` then `json.loads`) and stores it in `self._task_results[task_id]`. This enables downstream tasks to reference results like `destination_id` or `connection_id` via the `_FROM_TASK_N` placeholder pattern.
+
+4. **CREDENTIAL_REQUEST task handling** — `_dispatch()` now returns an immediate acknowledgment string `"CREDENTIAL_REQUEST acknowledged. N credential value(s) available in system memory."` for `CREDENTIAL_REQUEST` tasks, instead of attempting any tool dispatch. Credentials are already loaded; these tasks act purely as dependency gates.
+
+5. **Run script** (`run_session7_live.py`) — `_collect_credentials()` function collects all Supabase + Airbyte credentials interactively from stdin before the `team.run()` call. Collected values are injected via `alex.inject_credentials(credentials)`. CREDENTIAL_REQUEST task instructions are overridden in the plan to tell the LLM not to call `ask_human` for these tasks.
+
+**Why:**
+Collecting credentials outside the agent loop (before `team.run()`) and injecting them deterministically avoids the stdin-in-async-loop problem. The placeholder substitution system makes the execution plan JSON self-documenting — every `tool_args` value is either a literal or a named placeholder, making it clear which values depend on user input or prior task results.
+
+**Files changed:** `metagpt/roles/bi/bi_analytics_engineer.py`, `ClaudeCode_implementation/tests/run_session7_live.py`
+
+---
+
+### DEV-51 — execution_plan_supabase.json: `api_key` → `client_id`/`client_secret`; task 5 `source_definition_id` → `source_type: "faker"`; Supabase/Airbyte credential instructions corrected
+
+**Discovered during:** Session 7 live test runs (multiple Task 4 and Task 5 failures).
+
+**Problems:**
+
+1. **Task 2 (CREDENTIAL_REQUEST):** Original instruction asked for only `api_key` + `workspace_id` for Airbyte. Airbyte Cloud uses OAuth2 application credentials: separate `client_id` and `client_secret`. Updated to ask for three values: Client ID, Client Secret, Workspace ID, with step-by-step navigation to Airbyte Cloud > User Settings > Applications.
+
+2. **Tasks 4/5/6 `tool_args`:** All contained `"api_key": "AIRBYTE_API_KEY_FROM_TASK_2"`. Replaced with two fields: `"client_id": "AIRBYTE_CLIENT_ID_FROM_TASK_2"`, `"client_secret": "AIRBYTE_CLIENT_SECRET_FROM_TASK_2"`.
+
+3. **Task 5 `source_config`:** Had `"source_definition_id": "e1ead99e-0f8e-4f56-a8e7-5f6c2bb0a7e6"` — this UUID was stale. Airbyte Cloud Public API v1 returns HTTP 404 `STANDARD_SOURCE_DEFINITION` for all standard connectors accessed via `definitionId`. Replaced with `"source_type": "faker"` (see DEV-58).
+
+4. **Task 1 (CREDENTIAL_REQUEST):** Supabase navigation instructions referred to wrong UI path. Corrected: PostgreSQL URI is obtained from the green "Connect" button on the main project dashboard (not Project Settings), Connection method = "Session pooler", Type = "URI", port 5432. Direct connection (`db.xxx.supabase.co:5432`) does not resolve on free-tier Supabase — Session pooler URI (`*.pooler.supabase.com:5432`) is required.
+
+**Files changed:** `ClaudeCode_implementation/test_data/execution_plan_supabase.json`
+
+---
+
+### DEV-55 — AirbyteConnector.configure() reworked: manual OAuth2 token exchange replaces SDK auth
+
+**Discovered during:** Session 7 live test, Task 4 — `AirbyteAPI.__init__() got an unexpected keyword argument 'api_key'`.
+
+**Root cause (three compounding issues):**
+
+1. **Original implementation** called `AirbyteAPI(api_key=api_key)` directly. The `airbyte-api` 0.53.0 SDK does not accept `api_key` as a keyword argument to `AirbyteAPI.__init__()` — it requires `security=Security(...)`.
+
+2. **First fix attempt** used `Security(bearer_auth=api_key)` where `api_key` was a raw API key string. This produced HTTP 401 Unauthorized from the Airbyte API — Airbyte Cloud Applications do not issue raw Bearer tokens; they issue OAuth2 `client_id` + `client_secret` pairs that must be exchanged for a token via the token endpoint.
+
+3. **Second fix attempt** used `Security(client_credentials=SchemeClientCredentials(client_id=..., client_secret=...))`. The SDK's built-in OAuth2 client-credentials flow still returned HTTP 401 — the SDK's internal token exchange used an incorrect token URL or request format.
+
+**Final implementation (manual OAuth2 exchange):**
+```python
+def configure(self, client_id: str, client_secret: str, workspace_id: str, base_url: str | None = None) -> str:
+    api_base = (base_url or "https://api.airbyte.com/v1").rstrip("/")
+    token_url = f"{api_base}/applications/token"
+
+    resp = requests.post(
+        token_url,
+        json={"grant_type": "client_credentials", "client_id": client_id, "client_secret": client_secret},
+        headers={"Content-Type": "application/json"},
+        timeout=30,
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(f"Airbyte token exchange failed (HTTP {resp.status_code}): {resp.text}. ...")
+
+    access_token = resp.json().get("access_token") or resp.json().get("accessToken")
+    self._client = AirbyteAPI(security=Security(bearer_auth=access_token), server_url=api_base)
+    self._workspace_id = workspace_id
+```
+
+This POSTs directly to `/applications/token` with `grant_type: "client_credentials"`, extracts the `access_token`, then passes it as a `Security(bearer_auth=access_token)` Bearer token to the SDK. This bypasses the SDK's unreliable built-in OAuth2 handling entirely.
+
+**Signature change:** `configure(api_key, workspace_id, base_url?)` → `configure(client_id, client_secret, workspace_id, base_url?)`. The `api_key` parameter is replaced by two separate parameters matching the Airbyte Cloud Applications model.
+
+**Impact:** `_run_airbyte()` in `bi_analytics_engineer.py` updated to pass `client_id=` and `client_secret=` instead of `api_key=`.
+
+**Files changed:** `metagpt/tools/bi/airbyte_connector.py`, `metagpt/roles/bi/bi_analytics_engineer.py`
+
+---
+
+### DEV-56 — AirbyteConnector.trigger_sync(): HTTP 409 "already running" recovery
+
+**Discovered during:** Session 7 live test, Task 6 second attempt — HTTP 409 after first sync attempt succeeded but polling crashed.
+
+**Problem:**
+The first `trigger_sync()` call succeeded (sync job started), but `wait_for_sync()` crashed due to the `get_sync_status()` wrong-kwarg bug (DEV-57). The agent's ReAct loop retried `trigger_sync()`, which returned HTTP 409 `"A sync is already running for this connection"`. The retry loop was stuck: every `trigger_sync()` returned 409 with an exception, but the running job's `job_id` was not returned.
+
+**Implementation:**
+```python
+except Exception as exc:
+    if "409" in str(exc) or "already running" in str(exc).lower():
+        list_resp = client.jobs.list_jobs(
+            request=lj.ListJobsRequest(connection_id=connection_id, limit=1)
+        )
+        jobs = list_resp.jobs_response.data if list_resp.jobs_response else []
+        if jobs:
+            running = jobs[0]
+            return {"job_id": running.job_id, "status": running.status}
+    raise
+```
+
+When a 409 is caught, `list_jobs(connection_id=connection_id, limit=1)` fetches the currently running job and returns its `job_id` in the same `{"job_id": ..., "status": ...}` format as a successful `create_job()`. The caller (`wait_for_sync()`) then polls the running job normally without triggering a duplicate.
+
+**Note:** `list_jobs()` also requires a `ListJobsRequest` wrapper (not bare kwargs) — discovered alongside DEV-57.
+
+**Files changed:** `metagpt/tools/bi/airbyte_connector.py`
+
+---
+
+### DEV-57 — AirbyteConnector.get_sync_status(): `GetJobRequest` wrapper required
+
+**Discovered during:** Session 7 live test, Task 6 — `Jobs.get_job() got an unexpected keyword argument 'job_id'`.
+
+**Problem:**
+The original `get_sync_status()` called:
+```python
+resp = client.jobs.get_job(job_id=int(job_id))
+```
+The `airbyte-api` SDK does not accept bare `job_id=` as a keyword argument to `get_job()`. It requires a `GetJobRequest` wrapper object:
+```python
+import airbyte_api.api.getjob as gj
+resp = client.jobs.get_job(request=gj.GetJobRequest(job_id=int(job_id)))
+```
+
+The same pattern applies to `list_jobs()` — it requires `ListJobsRequest(connection_id=...)` (see DEV-56).
+
+**Implementation:** Fixed to use `gj.GetJobRequest(job_id=int(job_id))` wrapper. Also added `job_id` integer cast since `job_id` is stored/passed as a string.
+
+Additionally, `get_sync_status()` now normalises the status value:
+```python
+status_value = job.status.value if hasattr(job.status, "value") else str(job.status)
+```
+This handles both enum and string status representations from the SDK.
+
+**Files changed:** `metagpt/tools/bi/airbyte_connector.py`
+
+---
+
+### DEV-58 — AirbyteConnector.setup_connection(): `definitionId` replaced by `source_type` + `_SOURCE_TYPE_MAP` + typed `SourceFaker` config
+
+**Discovered during:** Session 7 live test, Task 5 — HTTP 404 `STANDARD_SOURCE_DEFINITION` error when creating Faker source via `definitionId`.
+
+**Problem:**
+The original `setup_connection()` passed `definition_id="e1ead99e-0f8e-4f56-a8e7-5f6c2bb0a7e6"` (the Faker source definition UUID) via:
+```python
+models.SourceCreateRequest(
+    ...
+    definition_id=definition_id,
+)
+```
+Airbyte Cloud Public API v1 dropped support for `definitionId` for standard connectors (those bundled with Airbyte Cloud). All standard connectors must now be created via a typed connector configuration object (e.g. `SourceFaker`) passed to the `configuration` field — not via `definitionId`. The API returns HTTP 404 with error code `STANDARD_SOURCE_DEFINITION` for any `definitionId` that maps to a standard connector.
+
+**Implementation:**
+
+Added `_SOURCE_TYPE_MAP` class attribute:
+```python
+_SOURCE_TYPE_MAP: dict[str, str] = {
+    "faker": "SourceFaker",
+}
+```
+
+Updated `setup_connection()` to check `source_config["source_type"]`. If the type is in the map, it builds a typed configuration object using `dataclasses.fields()` to filter only valid fields:
+```python
+if src_type in self._SOURCE_TYPE_MAP:
+    cls_name = self._SOURCE_TYPE_MAP[src_type]
+    cfg_cls = getattr(models, cls_name)
+    valid_fields = {f.name for f in dataclasses.fields(cfg_cls)}
+    filtered = {k: v for k, v in cfg_params.items() if k in valid_fields}
+    configuration = cfg_cls(**filtered)
+    definition_id = None
+else:
+    configuration = cfg_params
+    definition_id = source_config.get("source_definition_id")
+```
+
+**Execution plan impact (DEV-51):** Task 5 `source_config` in `execution_plan_supabase.json` updated from `"source_definition_id": "e1ead99e-..."` to `"source_type": "faker"`.
+
+**Extensibility:** To support a new standard Airbyte connector, add its lowercase `source_type` string → SDK class name mapping to `_SOURCE_TYPE_MAP`. Non-standard or private connectors continue to use the `source_definition_id` path.
+
+**Files changed:** `metagpt/tools/bi/airbyte_connector.py`, `ClaudeCode_implementation/test_data/execution_plan_supabase.json`
+
+---
+
+## Session 7 live test results
+
+**Date:** 2026-05-08  
+**All 11 tasks completed successfully.** Execution report saved to `workspace/docs/execution_report.md`.
+
+**Live test task outcomes:**
+
+| Task | Type | Result |
+|------|------|--------|
+| 1 | CREDENTIAL_REQUEST | Acknowledged — 9 credential values loaded |
+| 2 | CREDENTIAL_REQUEST | Acknowledged — 9 credential values loaded |
+| 3 | INSTANTIATION (SupabaseConnector) | Connected to Supabase at `ilxlvrxrdonbizshtlam.supabase.co` |
+| 4 | INSTANTIATION (AirbyteConnector) | Destination `Supabase DWH` created (ID: `d843a17c-...`) |
+| 5 | CONNECTION_SETUP (AirbyteConnector) | Faker source + connection created (connection_id: `a115119f-...`) |
+| 6 | DATA_INGESTION (AirbyteConnector) | Sync job `83467384` succeeded; streams: users, products, purchases |
+| 7 | CONNECTION_SETUP (DbtRunner postgres) | Profile configured for Supabase public schema |
+| 8 | TRANSFORMATION (dim_customer) | Model corrected (removed unavailable `company` column); built as view |
+| 9 | TRANSFORMATION (dim_product) | Model corrected (removed unavailable `name` column); built as view |
+| 10 | TRANSFORMATION (dim_date) | Built successfully |
+| 11 | TRANSFORMATION (fact_purchases) | Model corrected (schema alignment); built as view |
+
+**Self-correction behaviour (Tasks 8, 9, 11):** The LLM-generated SQL initially referenced columns that differed from the actual Faker schema. Alex's ReAct loop detected the dbt runtime errors, rewrote the SQL via `DbtRunner.write_model()`, and retried successfully — demonstrating the correction loop working as designed.

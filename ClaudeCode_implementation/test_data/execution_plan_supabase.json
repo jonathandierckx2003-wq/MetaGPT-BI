@@ -2,7 +2,7 @@
   {
     "task_id": "1",
     "dependent_task_ids": [],
-    "instruction": "Request Supabase credentials from the human user. Explain that a free Supabase project is required at https://supabase.com. Ask for exactly three values: (1) Project URL (e.g. https://xxx.supabase.co), (2) anon public key (Settings > API > anon public), (3) PostgreSQL connection string in URI format (Settings > Database > Connection string > URI, Transaction pooler, port 6543, replace [YOUR-PASSWORD] with the actual db password).",
+    "instruction": "Request Supabase credentials from the human user. Explain that a free Supabase project is required at https://supabase.com. Ask for exactly three values: (1) Project URL — found in Project Settings (left sidebar) > General; format: https://<ref>.supabase.co. (2) Anon public key — found in Project Settings > API Keys > anon public. (3) PostgreSQL Session pooler URI — click the green 'Connect' button at the top of the main project dashboard (not inside Settings), set Connection method = 'Session pooler' and Type = 'URI', then copy the string and replace [YOUR-PASSWORD] with the actual database password. IMPORTANT: use Session mode (port 5432), NOT Transaction mode (port 6543). URI format: postgresql://postgres.<ref>:[PASSWORD]@aws-0-<region>.pooler.supabase.com:5432/postgres.",
     "task_type": "CREDENTIAL_REQUEST",
     "tool": null,
     "tool_args": {}
@@ -10,7 +10,7 @@
   {
     "task_id": "2",
     "dependent_task_ids": [],
-    "instruction": "Request Airbyte Cloud credentials from the human user. Explain that a free Airbyte Cloud account is required at https://cloud.airbyte.com. Ask for exactly two values: (1) API key (Settings > API keys > New API key), (2) workspace ID (visible in the Airbyte Cloud URL: app.airbyte.com/workspaces/<workspace_id>).",
+    "instruction": "Request Airbyte Cloud credentials from the human user. Explain that a free Airbyte Cloud account is required at https://cloud.airbyte.com. Ask for exactly three values: (1) Client ID — click the user avatar at the bottom-left > User Settings > Applications > Create application (or open an existing one); the client ID is shown on the application detail page. (2) Client Secret — shown once when the application is first created; if lost, delete and recreate the application. (3) Workspace ID — visible in the URL: app.airbyte.com/workspaces/<workspace_id>/settings; there is also a copy button next to the ID on that page.",
     "task_type": "CREDENTIAL_REQUEST",
     "tool": null,
     "tool_args": {}
@@ -30,11 +30,12 @@
   {
     "task_id": "4",
     "dependent_task_ids": ["2", "3"],
-    "instruction": "Configure the Airbyte client and create a PostgreSQL destination in Airbyte Cloud pointing to the Supabase database. Use the Airbyte API key and workspace ID from task 2. The destination_config must use destination_definition_id '25c5221d-dce2-4163-ade9-739ef790f503' (PostgreSQL). Extract the Supabase host from the postgres URL (format: db.<ref>.supabase.co), use port 5432 for the direct connection, database 'postgres', username 'postgres', password from the postgres URL, schema 'public', ssl_mode {mode: require}.",
+    "instruction": "Configure the Airbyte client using OAuth2 client credentials from task 2 and create a PostgreSQL destination in Airbyte Cloud pointing to the Supabase database. The destination_config must use destination_definition_id '25c5221d-dce2-4163-ade9-739ef790f503' (PostgreSQL). Use port 5432, database 'postgres', schema 'public', ssl_mode {mode: require}.",
     "task_type": "INSTANTIATION",
     "tool": "AirbyteConnector",
     "tool_args": {
-      "api_key": "AIRBYTE_API_KEY_FROM_TASK_2",
+      "client_id": "AIRBYTE_CLIENT_ID_FROM_TASK_2",
+      "client_secret": "AIRBYTE_CLIENT_SECRET_FROM_TASK_2",
       "workspace_id": "AIRBYTE_WORKSPACE_ID_FROM_TASK_2",
       "destination_name": "Supabase DWH",
       "destination_definition_id": "25c5221d-dce2-4163-ade9-739ef790f503",
@@ -52,19 +53,19 @@
   {
     "task_id": "5",
     "dependent_task_ids": ["4"],
-    "instruction": "Create an Airbyte Faker (Sample Data) source and a connection from that source to the Supabase destination created in task 4. The source uses definition_id 'e1ead99e-0f8e-4f56-a8e7-5f6c2bb0a7e6' (Sample Data / Faker). Configure the source to sync 3 streams: users, products, purchases. The destination_id comes from the task 4 result.",
+    "instruction": "Create an Airbyte Faker (Sample Data) source and a connection from that source to the Supabase destination created in task 4. Use source_type='faker' (the Airbyte Cloud v1 API uses sourceType, not definitionId, for standard connectors). Configure the source to sync 3 streams: users, products, purchases. The destination_id comes from the task 4 result.",
     "task_type": "CONNECTION_SETUP",
     "tool": "AirbyteConnector",
     "tool_args": {
-      "api_key": "AIRBYTE_API_KEY_FROM_TASK_2",
+      "client_id": "AIRBYTE_CLIENT_ID_FROM_TASK_2",
+      "client_secret": "AIRBYTE_CLIENT_SECRET_FROM_TASK_2",
       "workspace_id": "AIRBYTE_WORKSPACE_ID_FROM_TASK_2",
       "source_config": {
         "source_name": "Sample Data Faker",
-        "source_definition_id": "e1ead99e-0f8e-4f56-a8e7-5f6c2bb0a7e6",
+        "source_type": "faker",
         "source_connection_config": {
           "count": 1000,
-          "seed": 42,
-          "always_updated_fields": []
+          "seed": 42
         },
         "destination_id": "DESTINATION_ID_FROM_TASK_4",
         "stream_names": ["users", "products", "purchases"]
@@ -78,7 +79,8 @@
     "task_type": "DATA_INGESTION",
     "tool": "AirbyteConnector",
     "tool_args": {
-      "api_key": "AIRBYTE_API_KEY_FROM_TASK_2",
+      "client_id": "AIRBYTE_CLIENT_ID_FROM_TASK_2",
+      "client_secret": "AIRBYTE_CLIENT_SECRET_FROM_TASK_2",
       "workspace_id": "AIRBYTE_WORKSPACE_ID_FROM_TASK_2",
       "connection_id": "CONNECTION_ID_FROM_TASK_5"
     }

@@ -87,6 +87,7 @@ def _collect_credentials() -> dict[str, str]:
     collect credentials from inside the agent loop.
 
     Returns a dict keyed by the placeholder strings used in execution_plan_supabase.json.
+    9 credential values: 6 Supabase + 3 Airbyte (client_id, client_secret, workspace_id).
     """
     print("\n" + "=" * 70)
     print("CREDENTIAL COLLECTION")
@@ -94,14 +95,17 @@ def _collect_credentials() -> dict[str, str]:
     print("=" * 70)
 
     print("\n--- Supabase (https://supabase.com) ---")
-    print("  Go to: Project Settings > General for the Project URL.")
-    print("  Go to: Project Settings > API for the anon public key.")
-    print("  Go to: Project Settings > Database > Connection string > URI")
-    print("  IMPORTANT: Choose 'Session' mode (port 5432) from the dropdown —")
-    print("  NOT 'Transaction' mode (port 6543). Session mode supports all SQL")
-    print("  features that dbt needs. Replace [YOUR-PASSWORD] with your db password.")
+    print("  Project URL:    Project Settings (left sidebar) > General > Reference ID.")
+    print("                  Format: https://<ref>.supabase.co")
+    print("  Anon public key: Project Settings > API Keys > anon public.")
+    print("  PostgreSQL URI: Click the green 'Connect' button at the top of the main")
+    print("                  project dashboard (not inside Settings). In the dialog,")
+    print("                  set Connection method = 'Session pooler' and Type = 'URI'.")
+    print("                  Copy the string under 'Connect your app' and replace")
+    print("                  [YOUR-PASSWORD] with your database password.")
+    print("  IMPORTANT: Use Session mode (port 5432), NOT Transaction mode (port 6543).")
     print("  Session pooler URI format:")
-    print("    postgresql://postgres.<ref>:PASSWORD@aws-0-REGION.pooler.supabase.com:5432/postgres")
+    print("    postgresql://postgres.<ref>:[PASSWORD]@aws-0-<region>.pooler.supabase.com:5432/postgres")
     supabase_url = input("\n  Project URL (e.g. https://abc.supabase.co): ").strip().rstrip("/")
     supabase_anon_key = input("  Anon public key: ").strip()
     supabase_pg_uri = input("  PostgreSQL URI (Session pooler, port 5432): ").strip()
@@ -122,8 +126,9 @@ def _collect_credentials() -> dict[str, str]:
     # Detect if the user pasted the format example literally instead of their real URI
     if "REGION" in supabase_pg_uri or "PASSWORD" in supabase_pg_uri or "<" in supabase_pg_uri:
         print("\n  [ERROR] The URI still contains placeholder text (REGION, PASSWORD, or <...>).")
-        print("  Go to: Supabase Dashboard → Settings → Database → Connection string")
-        print("  Select 'Session' mode and COPY the actual URI — do not type it manually.")
+        print("  Click the green 'Connect' button on the main Supabase project dashboard.")
+        print("  Set Connection method = 'Session pooler', Type = 'URI', then COPY the URI.")
+        print("  Replace [YOUR-PASSWORD] with your actual database password before pasting.")
         supabase_pg_uri = input("  Re-enter the actual PostgreSQL URI: ").strip()
         uri_m = re.match(
             r"(?:postgresql|postgres)://([^:@]+):([^@]+)@([^:/]+)(?::(\d+))?/(.+)",
@@ -152,14 +157,17 @@ def _collect_credentials() -> dict[str, str]:
     print(f"\n  Parsed: host={db_host}  user={db_user}")
 
     print("\n--- Airbyte Cloud (https://cloud.airbyte.com) ---")
-    print("  To get your API key:")
-    print("    Click your user avatar (bottom-left) > User Settings > Applications")
-    print("    > Create application. Copy the generated client secret / API key.")
+    print("  Airbyte Cloud uses OAuth2 application credentials (client ID + client secret).")
+    print("  To get them:")
+    print("    Click the user avatar (bottom-left) > User Settings > Applications.")
+    print("    Click 'Create application' (or open an existing one).")
+    print("    The Client ID is shown on the application detail page anytime.")
+    print("    The Client Secret is shown ONCE on creation — if lost, delete and recreate.")
     print("  To get your workspace ID:")
-    print("    Click Workspace Settings (top-right gear icon). The ID appears in")
-    print("    the URL: app.airbyte.com/workspaces/<workspace_id>/settings")
-    print("    There is also a copy button next to it.")
-    airbyte_api_key = input("\n  API key: ").strip()
+    print("    It appears in the URL: app.airbyte.com/workspaces/<workspace_id>/settings")
+    print("    There is also a copy button next to it on that page.")
+    airbyte_client_id = input("\n  Client ID: ").strip()
+    airbyte_client_secret = input("  Client Secret: ").strip()
     airbyte_workspace_id = input("  Workspace ID: ").strip()
 
     credentials = {
@@ -169,11 +177,12 @@ def _collect_credentials() -> dict[str, str]:
         "SUPABASE_DB_HOST_FROM_TASK_1": db_host,
         "SUPABASE_DB_USER_FROM_TASK_1": db_user,
         "SUPABASE_DB_PASSWORD_FROM_TASK_1": db_password,
-        "AIRBYTE_API_KEY_FROM_TASK_2": airbyte_api_key,
+        "AIRBYTE_CLIENT_ID_FROM_TASK_2": airbyte_client_id,
+        "AIRBYTE_CLIENT_SECRET_FROM_TASK_2": airbyte_client_secret,
         "AIRBYTE_WORKSPACE_ID_FROM_TASK_2": airbyte_workspace_id,
     }
     print(f"\n  {len(credentials)} credential values loaded.")
-    return credentials  # 8 values (added SUPABASE_DB_USER_FROM_TASK_1 vs prior 7)
+    return credentials  # 9 values (client_id + client_secret replace single api_key)
 
 
 async def main():

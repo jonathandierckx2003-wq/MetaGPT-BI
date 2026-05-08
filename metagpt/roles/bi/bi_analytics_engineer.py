@@ -340,7 +340,8 @@ class BIAnalyticsEngineer(RoleZero):
     def _run_airbyte(self, task_type: str, tool_args: dict) -> str:
         connector = AirbyteConnector()
         connector.configure(
-            api_key=tool_args.get("api_key", ""),
+            client_id=tool_args.get("client_id", ""),
+            client_secret=tool_args.get("client_secret", ""),
             workspace_id=tool_args.get("workspace_id", ""),
         )
         # DEV-47: INSTANTIATION creates the Airbyte destination (e.g. Supabase PostgreSQL)
