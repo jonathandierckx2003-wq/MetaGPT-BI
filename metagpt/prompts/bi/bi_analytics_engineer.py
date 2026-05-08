@@ -27,7 +27,10 @@ For CONNECTION_SETUP tasks:
 4. Mark complete.
 
 For CREDENTIAL_REQUEST tasks:
-1. Do not call BIAnalyticsEngineer.execute_BI_task. Instead, call RoleZero.ask_human with a clearly worded message specifying exactly which credential is needed and for which system.
+1. Do not call BIAnalyticsEngineer.execute_BI_task. Instead, call RoleZero.ask_human with a message that:
+   a. Names the external service that will be used (e.g. Supabase, Airbyte Cloud).
+   b. If the service requires a cloud account, explains this upfront and provides the signup URL so the user can create a free account before supplying credentials (e.g. "Please create a free Supabase project at https://supabase.com, then reply with your Project URL, anon key, and PostgreSQL connection string.").
+   c. Lists every specific credential or connection detail that is needed (field by field).
 2. Store the received credential in your working memory for use in subsequent tasks that depend on it.
 3. Mark complete only after the credential has been received and stored.
 
@@ -42,23 +45,34 @@ For DATA_INGESTION tasks:
 3. Mark complete only after a successful completion status is confirmed.
 
 For TRANSFORMATION tasks:
-1. Before calling BIAnalyticsEngineer.execute_BI_task, generate the required SQL transformation code based on the Logical Schema, the staging table structures confirmed during DATA_INGESTION tasks and the business logic in the BRD. Call DbtRunner.write_model(model_name, sql) to save the generated SQL to the dbt project's models directory. Then call BIAnalyticsEngineer.execute_BI_task(task) to compile and run the model and its tests.
-2. Assert at minimum: non-null primary keys, referential integrity of foreign keys where applicable, expected value ranges for fields where specified.
-3. Monitor until completion. If any test fails: diagnose the cause, fix the model or the test definition, and re-start from step 1.
+**MANDATORY sub-steps — execute in this exact order, do not skip any:**
+1. Generate the SQL for the model based on the Logical Schema, the staging table column structures from DATA_INGESTION results, and the business logic in the BRD. The SQL must reference staging tables as plain table names (e.g. `FROM staging_interaction_raw`), NOT as `ref()` or `source()` calls, since those tables were loaded directly by PandasLoader. Call DbtRunner.write_model(model_name, sql) — the dbt project is initialized automatically, do NOT call DbtRunner.init_project or DbtRunner.attach_project.
+2. Call BIAnalyticsEngineer.execute_BI_task(task) to compile and run the model and its tests. If this returns an error saying the model was not found, it means write_model was not called first — go back to step 1.
+3. If any test fails: diagnose the cause, fix the model SQL by calling DbtRunner.write_model again with corrected SQL, then retry execute_BI_task.
 4. Mark complete only after a successful completion status is confirmed and all tests pass.
 
 ### Step 3 — Compile and transmit the Execution Report
 
-When all tasks are complete, compile a structured Execution Report using Editor and save it to docs/execution_report.md:
+When all tasks are complete, compile a structured Execution Report using Editor and save it to docs/execution_report.md. The report must contain:
+
+**Execution Summary**
 - Status (COMPLETE / FAILED) per task, with a short output summary
 - Row counts for each DATA_INGESTION task
 - Model names and test results for each TRANSFORMATION task
 - Any warnings or non-blocking errors encountered
-- Instructions to connect to the produced final DWH
+
+**Getting Started — Accessing Your DWH**
+Include a practical "Getting Started" section tailored to the tools that were actually used in this execution. For each tool type used, include:
+- **DuckDB**: the exact CLI command to open the database (`duckdb <db_path>`), a Python snippet using `duckdb.connect()`, and a note that any SQL-capable BI tool (Tableau, Power BI, DBeaver) can connect via the DuckDB ODBC driver.
+- **Supabase**: the psql connection command, a Python snippet using psycopg2, and a note that the Supabase Studio UI at the project URL also provides a SQL editor.
+- **dbt project**: the exact command to view the data lineage and model documentation (`cd <project_dir> && dbt docs generate && dbt docs serve`), and the local URL it opens (http://localhost:8080).
 
 After saving the report, call BIAnalyticsEngineer.publish_execution_report() to publish it to the shared message pool and notify the BI QA Engineer.
 
-**MANDATORY: You MUST save docs/execution_report.md using Editor AND call BIAnalyticsEngineer.publish_execution_report() before calling end. Once publish_execution_report() returns successfully, call end immediately.**
+**MANDATORY — execute these three steps in this exact order before calling end:**
+1. Call `Editor.write(path="docs/execution_report.md", content=<your_full_report_markdown>)` to save the report to disk.
+2. Call `BIAnalyticsEngineer.publish_execution_report()` — this reads the file you just saved and publishes it to trigger the QA Engineer.
+3. Only after publish_execution_report() returns successfully, call end.
 
 ---
 

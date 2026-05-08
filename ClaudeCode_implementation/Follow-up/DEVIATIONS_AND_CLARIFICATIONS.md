@@ -913,7 +913,284 @@ RoleZero's command dispatcher looks up commands by `"ClassName.method_name"` key
 
 ## Session 6 deviations
 
-*(To be filled in during Session 6)*
+### DEV-40 — `getattr` pattern required for lazy-init methods called from Pydantic `model_validator(mode="after")`
+
+**Discovered during:** Session 6 smoke test (AttributeError during `BIAnalyticsEngineer()` instantiation).
+
+**Problem:**
+`RoleZero` uses a `@model_validator(mode="after")` named `set_tool_execution` that calls `_update_tool_execution()`. Pydantic's `model_validator(mode="after")` fires during `validate_python()`, which is invoked inside `super().__init__(**kwargs)`. This means `_update_tool_execution()` is called **before** the code in `BIAnalyticsEngineer.__init__()` after the `super()` call has run. When `_get_dbt_runner()` was implemented as `if self._dbt_runner is None:`, Python raises `AttributeError: 'BIAnalyticsEngineer' object has no attribute '_dbt_runner'` because Pydantic's `__getattr__` raises on missing attributes (unlike a normal Python object which would return `None` for an uninitialised attribute).
+
+```
+# Timeline at BIAnalyticsEngineer() instantiation:
+1. super().__init__(**kwargs)  # calls Pydantic's validate_python
+2.   → @model_validator(mode="after") fires
+3.     → _update_tool_execution() called
+4.       → _get_dbt_runner() called
+5.         → self._dbt_runner   ← AttributeError! (not set yet)
+6. # These lines are NEVER REACHED in the first call:
+7. self._dbt_runner = None      ← too late
+8. self._duckdb_executor = None ← too late
+```
+
+**Implementation:**
+`_get_dbt_runner()` and `_get_duckdb_executor()` use `getattr(self, "_dbt_runner", None)` (and the equivalent for `_duckdb_executor`) instead of `self._dbt_runner`. `getattr` with a default never triggers `__getattr__` and safely returns `None` when the attribute doesn't exist yet. Once Pydantic's validator creates the instance (and sets `extra="allow"` attributes), the `DbtRunner()` and `DuckDBExecutor()` instances are assigned on `self` and are re-used on all subsequent calls.
+
+Additionally, `self._dbt_runner = None` and `self._duckdb_executor = None` initialisations were removed from `__init__` — they would have reset already-created instances to `None` on the call after `super().__init__()`.
+
+**Why:**
+`Role` model config is `ConfigDict(extra="allow")`, so setting `self._dbt_runner = DbtRunner()` inside `_get_dbt_runner()` is stored correctly. The `getattr` guard is the minimum fix: it handles both the "not yet set" case (during `model_validator`) and the "already set" case (normal post-init calls) without any structural change to the lazy-init pattern.
+
+**Files changed:** `metagpt/roles/bi/bi_analytics_engineer.py`
+
+---
+
+### DEV-41 — `todo_action` corrected from `WriteExecutionPlan` to `WriteExecutionReport`
+
+**Theoretical design (pre-logged in memory notes):**
+The pre-session design notes had `todo_action = any_to_name(WriteExecutionPlan)` — pointing at the action that triggers this role (the plan it consumes).
+
+**Problem:**
+Every other BI role sets `todo_action` to the action class corresponding to what the role **produces**, not what triggers it:
+- BIRequirementsAnalyst: `todo_action = "WriteBRD"` (produces BRD)
+- BIDataModeler: `todo_action = "WriteDataModel"` (produces data model)
+- BISolutionArchitect: `todo_action = "WriteExecutionPlan"` (produces execution plan)
+- BIQAEngineer (Session 7): `todo_action = "WriteValidationReport"` (produces validation report)
+
+`WriteExecutionPlan` is the action that triggers BIAnalyticsEngineer (Agent 4), not what it produces. What Agent 4 produces is the execution report, typed as `WriteExecutionReport`.
+
+**Implementation:**
+`todo_action` corrected to `any_to_name(WriteExecutionReport)` = `"WriteExecutionReport"`, consistent with all other BI roles.
+
+**Why:**
+`todo_action` controls what action/task the agent considers its primary objective. Using the trigger action instead of the produced action would mislabel Alex's primary goal and could affect downstream MetaGPT internals that inspect `todo_action` for task management.
+
+**Files changed:** `metagpt/roles/bi/bi_analytics_engineer.py`
+
+---
+
+### DEV-42 — dbt project auto-initialization inside `_run_dbt()` (Option A)
+
+**Theoretical design:**
+The Session 5 execution plan (14 tasks) was expected to include explicit INSTANTIATION and CONNECTION_SETUP tasks for dbt: `dbt init bi_dwh` → `dbt configure_profile`. The LLM-generated plan does not include any dbt setup tasks — it jumps directly from DuckDB SCHEMA_CREATION to 8 TRANSFORMATION tasks using DbtRunner.
+
+**Problem:**
+`DbtRunner.run_model(model_name)` requires that `_project_dir` is already set on the instance (via `init_project()` or `attach_project()`). Without a preceding setup task, the first TRANSFORMATION call would raise `RuntimeError: No dbt project directory set. Call init_project() or attach_project() first.`
+
+Two options were considered:
+- **Option B** (explicit): Add dbt INSTANTIATION/CONNECTION_SETUP tasks to the execution plan. Requires changing Agent 3's prompt to always include these tasks, and the plan becomes harder to read without them being necessary for user understanding.
+- **Option A** (transparent): Detect `dbt._project_dir is None` inside `_run_dbt()` and auto-init transparently before the first TRANSFORMATION call.
+
+**Implementation (Option A — confirmed with user):**
+`_run_dbt()` checks `if dbt._project_dir is None` before processing any TRANSFORMATION task. If true, it calls `init_project("bi_dwh")` and `configure_profile(profile_name="bi_dwh", target_name="dev", db_type="duckdb", db_path=abs_db_path)`. The `db_path` is resolved to an absolute path (`Path(db_path).resolve()`) before being written to `profiles.yml`, because dbt's working directory during profile reads is the project directory, not the repo root — relative paths in `profiles.yml` would fail.
+
+```python
+if dbt._project_dir is None:
+    project_name = "bi_dwh"
+    dbt.init_project(project_name)
+    abs_db_path = str(Path(db_path).resolve()) if db_path else db_path
+    dbt.configure_profile(profile_name=project_name, target_name="dev",
+                          db_type="duckdb", db_path=abs_db_path)
+```
+
+The auto-init runs at most once per BIAnalyticsEngineer instance: after `init_project()`, `dbt._project_dir` is set, so subsequent TRANSFORMATION tasks skip the init block.
+
+**Why:**
+The LLM's job is to execute tasks, not to invent setup tasks that weren't in the plan. Transparent auto-init makes the architecture robust to the case where the execution plan omits dbt setup tasks (which is the actual plan produced by Session 5). This is analogous to how `_run_duckdb()` auto-connects when `executor._conn is None` — self-healing dispatch rather than strict task pre-condition enforcement.
+
+**Files changed:** `metagpt/roles/bi/bi_analytics_engineer.py`
+
+---
+
+### DEV-43 — Adding a new Tool class requires 5 steps, not 3 as described in the thesis
+
+**Theoretical design (thesis section 4.2.3.4, lines 527–530):**
+> "To add a new tool to the system, a developer must thus only write its corresponding class file in metagpt/tools, add its name to the role's tools attribute list to make it available to the BI Analytics Engineer. It's also important not to forget to add it's name into the BI Solution Architect prompt so that the tool can actually be added as a value in the 'tool' attribute of tasks listed in the DWH Technical Execution Plan."
+
+The thesis therefore describes 3 steps:
+1. Write the Tool class with `@register_tool` in `metagpt/tools/bi/`
+2. Add the tool name to `BIAnalyticsEngineer.tools`
+3. Add the tool name to the BI Solution Architect prompt (`bi_solution_architect.py`)
+
+**Implementation reality:**
+The current implementation requires 2 additional steps that the thesis does not mention:
+
+4. Add an `elif tool_name == "NewToolName":` branch in `_dispatch()` in `bi_analytics_engineer.py` — so the router knows what to call for the new tool.
+5. Add the tool's bound methods to `tool_execution_map` in `_update_tool_execution()` in `bi_analytics_engineer.py` — so the LLM can call the tool's methods directly (e.g. `NewTool.method_name`) from the ReAct loop if needed.
+
+**Assessment:**
+Steps 4 and 5 are genuinely small: step 4 is one `elif` block (~5 lines), step 5 is a few dict entries. "Minimal changes" (the thesis's claim) is still accurate — but the thesis text is incomplete. The 5-step reality should replace the 3-step description in the thesis.
+
+An alternative design using an `execute(task_type, tool_args)` method on each tool class would make dispatch fully dynamic (eliminating step 4), but this couples tool classes to the BI task type concept, changes the tool class interface for all 5 existing tools, and adds complexity for no runtime benefit in a PoC. The 5-step manual approach was therefore kept as-is.
+
+**What to update in thesis section 4.2.3.4:**
+Replace the 3-step description with a 5-step version that explicitly mentions editing `_dispatch()` and `_update_tool_execution()` in `bi_analytics_engineer.py`. Emphasize that steps 4 and 5 are small targeted additions (not structural changes), consistent with the "minimal changes" claim.
+
+**Files that would change for a new tool:** `metagpt/tools/bi/<new_tool>.py` (new file), `metagpt/roles/bi/bi_analytics_engineer.py` (two small additions), `metagpt/prompts/bi/bi_solution_architect.py` (one line in the tool selection section).
+
+---
+
+## PoC limitations (tracked for thesis "Future Work" section)
+
+### LIM-01 — PandasLoader is DuckDB-specific; no generic cross-adapter ingestion tool
+
+**What works:**
+- DuckDB scenario: `PandasLoader.load_file()` loads CSV/Excel into DuckDB directly via `duckdb.connect()`.
+- Supabase scenario: `AirbyteConnector` handles all ingestion (API/file source → Supabase destination). PandasLoader is not used.
+- dbt is already multi-adapter: `DbtRunner.configure_profile(db_type="duckdb"|"postgres")` supports both DuckDB and Supabase/PostgreSQL — just requires the right dbt adapter installed (`dbt-duckdb` or `dbt-postgres`).
+
+**What doesn't work:**
+`PandasLoader` cannot load flat files into PostgreSQL/Supabase. There is no generic "CSV → any DWH" ingestion tool. Each scenario must use the tools appropriate for its DWH:
+- DuckDB scenario: `DuckDBExecutor` + `PandasLoader` + `DbtRunner(duckdb)`
+- Supabase scenario: `SupabaseConnector` + `AirbyteConnector` + `DbtRunner(postgres)`
+
+**Why acceptable for PoC:**
+In the Supabase scenario, Airbyte is the intended ingestion layer (it connects to API/file sources and loads into the destination DWH). PandasLoader exists as a lightweight shortcut for the DuckDB PoC scenario only. The BI Solution Architect's tool selection logic already handles this: it picks tools per scenario based on user preference.
+
+**Future work recommendation (for thesis section 5.2):**
+A `GenericLoader` tool class (backed by pandas + SQLAlchemy) could support multiple destination backends (DuckDB, PostgreSQL, BigQuery, etc.) via a connection string abstraction. This would make flat-file ingestion DWH-agnostic and eliminate the PandasLoader/SupabaseConnector split for simple CSV scenarios.
+
+**What to add to thesis section 4.2 / 5.2:**
+Acknowledge that PandasLoader is DuckDB-specific and that cross-adapter flat-file ingestion is left as a future extension. Frame Airbyte as the intended ingestion tool for cloud DWH scenarios (Supabase, BigQuery, etc.), consistent with real enterprise ELT practice.
+
+---
+
+### DEV-44 — Four dbt-related fixes discovered during live test runs 1 and 2
+
+**Discovered during:** Session 6 live integration test (runs 1 and 2 failed; run 3 was the first full success).
+
+**Background:**
+The initial implementation compiled fine and passed all 32 smoke tests, but failed in live execution because the LLM's reasoning about dbt setup steps differed from expectations, and two subtle dbt CLI behaviours were not handled.
+
+---
+
+**Fix 1 — `DbtRunner.write_model` auto-init (DbtRunner, discovered in run 1):**
+
+**Problem:** In live run 1, the LLM called `DbtRunner.init_project("ecommerce_dwh", project_dir="workspace")` manually (because `init_project` was in `tool_execution_map`). This created the project in the wrong location and with the wrong name. In live run 2 (after removing `init_project` from the map), the LLM correctly called `DbtRunner.write_model(model_name, sql)` directly before `execute_BI_task` — but `write_model` required `_project_dir` to be set and raised `RuntimeError: No dbt project attached`.
+
+**Fix:** Added lazy init at the top of `write_model()` in `dbt_runner.py`:
+```python
+if self._project_dir is None:
+    self.init_project("bi_dwh")
+```
+This ensures the dbt project is scaffolded automatically the first time `write_model` is called, regardless of whether an INSTANTIATION/CONNECTION_SETUP task for dbt was included in the execution plan.
+
+**Files changed:** `metagpt/tools/bi/dbt_runner.py`
+
+---
+
+**Fix 2 — Absolute `--profiles-dir` path in all DbtRunner CLI calls (DbtRunner, discovered in run 1):**
+
+**Problem:** All three `_run_dbt()` calls that pass `--profiles-dir` used `str(self._project_dir)` which was a relative path (e.g. `dbt_projects/bi_dwh`). When dbt runs, it changes its working directory internally. The relative path was resolved relative to the changed CWD — producing an invalid path like `dbt_projects/bi_dwh/dbt_projects/bi_dwh` — and dbt raised "Path does not exist".
+
+**Fix:** Changed to `str(self._project_dir.resolve())` in `compile_model`, `run_model`, and `run_tests`. `Path.resolve()` returns the absolute path, which is CWD-independent.
+
+**Files changed:** `metagpt/tools/bi/dbt_runner.py`
+
+---
+
+**Fix 3 — `run_model` raises `RuntimeError` on silent "no enabled node" dbt exit (DbtRunner, discovered in run 2):**
+
+**Problem:** When a model file has not been written yet (i.e. `write_model` was not called), `dbt run --select model_name` exits with return code **0** but prints `"no enabled node in selection set"` or `"does not match any enabled nodes"` in stdout. The existing code only checked `returncode != 0` for failure detection, so the silent non-execution was treated as success. All 8 TRANSFORMATION tasks appeared to complete successfully, but no dbt models were actually materialised.
+
+**Fix:** Added a post-run check in `run_model`:
+```python
+combined = (result["stdout"] + result["stderr"]).lower()
+if "no enabled node" in combined or "does not match any enabled nodes" in combined:
+    raise RuntimeError(
+        f"dbt found no model named '{model_name}'. "
+        "Ensure DbtRunner.write_model was called first to create the SQL file."
+    )
+```
+The error message explicitly instructs the LLM to call `write_model` first, enabling self-correction.
+
+**Files changed:** `metagpt/tools/bi/dbt_runner.py`
+
+---
+
+**Fix 4 — `init_project` and `attach_project` removed from `tool_execution_map` + TRANSFORMATION "MANDATORY sub-steps" prompt guard (bi_analytics_engineer.py, discovered in runs 1 and 2):**
+
+**Problem (run 1):** `DbtRunner.init_project` was present in `tool_execution_map`, so the LLM could call it directly. It did — with wrong arguments (`project_name="ecommerce_dwh"`, `project_dir="workspace"`) — creating the dbt project in the wrong location with the wrong name before the auto-init logic in `_run_dbt` could run.
+
+**Problem (run 2):** After removing `init_project`/`attach_project` from the map, a second issue emerged: the LLM skipped `DbtRunner.write_model()` for all TRANSFORMATION tasks and called `BIAnalyticsEngineer.execute_BI_task(task)` directly. With Fix 1 in place, `write_model` auto-inits the project, but the model SQL was never written — so all 8 dbt runs found no model file (Fix 3 now catches this and raises an error).
+
+**Root cause:** The TRANSFORMATION steps in the prompt said "Generate the SQL... Call DbtRunner.write_model... Call execute_BI_task" but did not make these feel mandatory. The LLM could interpret "generate the SQL" as a mental step only.
+
+**Fix — remove from map:**
+```python
+# Removed from tool_execution_map in _update_tool_execution():
+# "DbtRunner.init_project": dbt.init_project,   ← removed
+# "DbtRunner.attach_project": dbt.attach_project, ← removed
+```
+This prevents the LLM from calling these methods directly and forces all dbt project setup to go through auto-init in `_run_dbt` / `write_model`.
+
+**Fix — prompt MANDATORY sub-steps:**
+The TRANSFORMATION task dispatch section in `bi_analytics_engineer.py` prompt was rewritten with an explicit mandatory header and explicit ordering:
+```
+**MANDATORY sub-steps — execute in this exact order, do not skip any:**
+1. Generate the SQL... Call DbtRunner.write_model(model_name, sql) — the dbt project is
+   initialized automatically, do NOT call DbtRunner.init_project or DbtRunner.attach_project.
+2. Call BIAnalyticsEngineer.execute_BI_task(task) to compile and run the model and its tests.
+   If this returns an error saying the model was not found, it means write_model was not called
+   first — go back to step 1.
+3. If any test fails: diagnose, fix with DbtRunner.write_model again, then retry execute_BI_task.
+4. Mark complete only after successful completion and all tests pass.
+```
+
+Additionally, the plain table reference instruction was added: "SQL must reference staging tables as plain table names (e.g. `FROM staging_interaction_raw`), NOT as `ref()` or `source()` calls, since those tables were loaded directly by PandasLoader."
+
+The Step 3 report-generation section also received an explicit 3-step MANDATORY sequence:
+```
+**MANDATORY — execute these three steps in this exact order before calling end:**
+1. Call `Editor.write(path="docs/execution_report.md", content=<your_full_report_markdown>)` to save the report to disk.
+2. Call `BIAnalyticsEngineer.publish_execution_report()` — this reads the file you just saved and publishes it to trigger the QA Engineer.
+3. Only after publish_execution_report() returns successfully, call end.
+```
+This fixes a run 2 issue where the LLM composed the report as text in its reasoning output but did not call `Editor.write` before calling `publish_execution_report`.
+
+**Files changed:** `metagpt/roles/bi/bi_analytics_engineer.py` (tool_execution_map), `metagpt/prompts/bi/bi_analytics_engineer.py` (TRANSFORMATION sub-steps + Step 3 guard)
+
+---
+
+**Summary of all 4 fixes:**
+
+| Fix | File | Nature |
+|-----|------|--------|
+| write_model auto-init | `dbt_runner.py` | Lazy project init — handles LLM calling write_model before execute_BI_task sets up dbt |
+| Absolute `--profiles-dir` | `dbt_runner.py` | Path resolution — prevents CWD-relative path failure during dbt CLI execution |
+| RuntimeError on "no enabled node" | `dbt_runner.py` | Silent failure detection — forces LLM to write model SQL before running dbt |
+| Remove init/attach from map + MANDATORY sub-steps | `bi_analytics_engineer.py` + `bi_analytics_engineer.py` (prompt) | Guard against LLM bypassing write_model or manually re-initialising the dbt project |
+
+---
+
+### DEV-45 — Tools list uses only `BIAnalyticsEngineer` + `DbtRunner`, not all external tool classes
+
+**Theoretical design (thesis Table 6, section 4.2.3.4):**
+The thesis lists the following in the `tools` attribute for BIAnalyticsEngineer:
+```
+RoleZero, Editor, BIAnalyticsEngineer.execute_BI_task, DuckDBExecutor, DbtRunner,
+AirbyteConnector, PandasLoader, SupabaseConnector + any tools for additional external services
+```
+This lists all five external tool classes alongside `execute_BI_task`.
+
+**Implementation:**
+```python
+tools: list[str] = ["RoleZero", "Editor", "BIAnalyticsEngineer", "DbtRunner"]
+```
+Only `DbtRunner` is listed as an external tool class. `DuckDBExecutor`, `PandasLoader`, `AirbyteConnector`, and `SupabaseConnector` are NOT in the tools list.
+
+**Why:**
+The thesis tools list appears to reflect the original EXTRA_INSTRUCTION design (DEV-05), where the LLM was supposed to call each tool class directly. Under that design, the LLM would call `DuckDBExecutor.connect()` or `PandasLoader.load_file()` directly, so all tool classes needed to be in the tools list and in `tool_execution_map`.
+
+The implemented architecture follows the dispatch-router design from the thesis body text (also DEV-05): the LLM calls `execute_BI_task(task)` as the single entry point, which internally routes to the correct tool. The LLM never directly calls `DuckDBExecutor.connect()` or `PandasLoader.load_file()` — those are called in Python by `_run_duckdb` and `_run_pandas` respectively. So there is no need to register them in `tool_execution_map` or list them in `tools`.
+
+`DbtRunner` is the exception: TRANSFORMATION tasks require the LLM to call `DbtRunner.write_model(model_name, sql)` directly (to write the SQL before dispatching), so DbtRunner methods must be in both the tools list and `tool_execution_map`. This is consistent with the TRANSFORMATION MANDATORY sub-steps prompt (DEV-44).
+
+`BIAnalyticsEngineer` in the tools list exposes `execute_BI_task` and `publish_execution_report` (via `@register_tool(include_functions=[...])`).
+
+**What to update in thesis:**
+Correct Table 6's tools list to match: `["RoleZero", "Editor", "BIAnalyticsEngineer", "DbtRunner"]`. Explain that the dispatch-router design removes the need to list individual tool classes — only DbtRunner requires direct LLM access because write_model must be called before execute_BI_task in TRANSFORMATION tasks.
+
+**Files changed:** `metagpt/roles/bi/bi_analytics_engineer.py` (tools list)
 
 ---
 

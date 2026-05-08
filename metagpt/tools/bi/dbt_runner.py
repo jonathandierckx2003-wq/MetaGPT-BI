@@ -192,6 +192,9 @@ class DbtRunner:
         Returns:
             Path of the written .sql file.
         """
+        # DEV-44: auto-init default project so write_model works before execute_BI_task
+        if self._project_dir is None:
+            self.init_project("bi_dwh")
         project_dir = self._require_project()
         models_dir = project_dir / "models"
         models_dir.mkdir(exist_ok=True)
@@ -231,7 +234,7 @@ class DbtRunner:
         result = self._run_dbt(
             "compile",
             "--select", model_name,
-            "--profiles-dir", str(self._project_dir),
+            "--profiles-dir", str(self._project_dir.resolve()),
         )
         if result["returncode"] != 0:
             raise RuntimeError(f"dbt compile failed for '{model_name}':\n{result['stderr']}")
@@ -254,10 +257,16 @@ class DbtRunner:
         result = self._run_dbt(
             "run",
             "--select", model_name,
-            "--profiles-dir", str(self._project_dir),
+            "--profiles-dir", str(self._project_dir.resolve()),
         )
         if result["returncode"] != 0:
             raise RuntimeError(f"dbt run failed for '{model_name}':\n{result['stderr']}\n{result['stdout']}")
+        combined = (result["stdout"] + result["stderr"]).lower()
+        if "no enabled node" in combined or "does not match any enabled nodes" in combined:
+            raise RuntimeError(
+                f"dbt found no model named '{model_name}'. "
+                "Ensure DbtRunner.write_model was called first to create the SQL file."
+            )
         return result
 
     def run_tests(self, model_name: str | None = None) -> dict[str, Any]:
