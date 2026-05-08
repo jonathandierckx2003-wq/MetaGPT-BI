@@ -169,6 +169,68 @@ class TestRunAirbyteFixes(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# TestDEV50CredentialInjection
+# ---------------------------------------------------------------------------
+
+class TestDEV50CredentialInjection(unittest.TestCase):
+    """DEV-50: Pre-injection of credentials + placeholder substitution."""
+
+    def setUp(self):
+        self.agent = BIAnalyticsEngineer()
+
+    def test_inject_credentials_stores_values(self):
+        self.agent.inject_credentials({"FOO_FROM_TASK_1": "bar"})
+        self.assertEqual(self.agent._credentials["FOO_FROM_TASK_1"], "bar")
+
+    def test_substitute_placeholders_direct_lookup(self):
+        self.agent.inject_credentials({"SUPABASE_PROJECT_URL_FROM_TASK_1": "https://abc.supabase.co"})
+        result = self.agent._substitute_placeholders("SUPABASE_PROJECT_URL_FROM_TASK_1")
+        self.assertEqual(result, "https://abc.supabase.co")
+
+    def test_substitute_placeholders_nested_dict(self):
+        self.agent.inject_credentials({
+            "SUPABASE_DB_HOST_FROM_TASK_1": "db.abc.supabase.co",
+            "SUPABASE_DB_PASSWORD_FROM_TASK_1": "s3cr3t",
+        })
+        tool_args = {
+            "destination_connection_config": {
+                "host": "SUPABASE_DB_HOST_FROM_TASK_1",
+                "port": 5432,
+                "password": "SUPABASE_DB_PASSWORD_FROM_TASK_1",
+            }
+        }
+        result = self.agent._substitute_placeholders(tool_args)
+        self.assertEqual(result["destination_connection_config"]["host"], "db.abc.supabase.co")
+        self.assertEqual(result["destination_connection_config"]["password"], "s3cr3t")
+        self.assertEqual(result["destination_connection_config"]["port"], 5432)
+
+    def test_substitute_placeholders_from_task_result(self):
+        self.agent._task_results["4"] = {"destination_id": "dest-xyz", "status": "created"}
+        result = self.agent._substitute_placeholders("DESTINATION_ID_FROM_TASK_4")
+        self.assertEqual(result, "dest-xyz")
+
+    def test_substitute_connection_id_from_task_result(self):
+        self.agent._task_results["5"] = {
+            "source_id": "src-1", "connection_id": "conn-abc", "streams": ["users"]
+        }
+        result = self.agent._substitute_placeholders("CONNECTION_ID_FROM_TASK_5")
+        self.assertEqual(result, "conn-abc")
+
+    def test_unknown_placeholder_returned_unchanged(self):
+        result = self.agent._substitute_placeholders("SOME_UNKNOWN_PLACEHOLDER")
+        self.assertEqual(result, "SOME_UNKNOWN_PLACEHOLDER")
+
+    def test_credential_request_dispatch_returns_acknowledgment(self):
+        self.agent.inject_credentials({
+            "SUPABASE_PROJECT_URL_FROM_TASK_1": "https://abc.supabase.co",
+            "SUPABASE_ANON_KEY_FROM_TASK_1": "key123",
+        })
+        result = self.agent._dispatch("CREDENTIAL_REQUEST", "", {})
+        self.assertIn("CREDENTIAL_REQUEST acknowledged", result)
+        self.assertIn("2", result)
+
+
+# ---------------------------------------------------------------------------
 # TestRunDbtPostgresProfile
 # ---------------------------------------------------------------------------
 

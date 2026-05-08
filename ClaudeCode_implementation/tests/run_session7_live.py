@@ -13,8 +13,9 @@ Pre-requisites:
 
 The BIAnalyticsEngineer (Alex) is pre-loaded with the 11-task Supabase execution plan
 from ClaudeCode_implementation/test_data/execution_plan_supabase.json.
+Credentials are collected interactively before the agent session begins (DEV-50).
 Alex will:
-  1. Execute CREDENTIAL_REQUEST tasks -> ask the human user for Supabase + Airbyte credentials
+  1. Mark CREDENTIAL_REQUEST tasks complete (credentials already loaded)
   2. Connect to Supabase via SupabaseConnector
   3. Create Airbyte destination + Faker connection via AirbyteConnector
   4. Trigger the Faker -> Supabase sync
@@ -31,6 +32,7 @@ SQL editor or any PostgreSQL client.
 
 import asyncio
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -76,6 +78,66 @@ def _build_combined_data_model(spec: str, logical: str) -> str:
     )
 
 
+def _collect_credentials() -> dict[str, str]:
+    """Interactively collect Supabase and Airbyte credentials before the agent session.
+
+    DEV-50: team.run() is a batch loop with no stdin injection mechanism. Collecting
+    credentials here and injecting them into Alex's _credentials dict before run() avoids
+    the infinite reply_to_human loop that occurred when CREDENTIAL_REQUEST tasks tried to
+    collect credentials from inside the agent loop.
+
+    Returns a dict keyed by the placeholder strings used in execution_plan_supabase.json.
+    """
+    print("\n" + "=" * 70)
+    print("CREDENTIAL COLLECTION")
+    print("Credentials are collected here and injected into Alex before the run.")
+    print("=" * 70)
+
+    print("\n--- Supabase (https://supabase.com) ---")
+    print("  Go to: Project Settings > General to find your Project URL.")
+    print("  Go to: Project Settings > API for the anon public key.")
+    print("  Go to: Project Settings > Database > Connection string > URI")
+    print("         (Transaction pooler, port 6543 — replace [YOUR-PASSWORD] with your db password)")
+    supabase_url = input("\n  Project URL (e.g. https://abc.supabase.co): ").strip().rstrip("/")
+    supabase_anon_key = input("  Anon public key: ").strip()
+    supabase_pg_uri = input("  PostgreSQL URI (Transaction pooler, port 6543): ").strip()
+
+    # Derive direct-connection DB host from project URL: https://REF.supabase.co -> db.REF.supabase.co
+    m = re.search(r"https?://([^.]+)\.supabase\.co", supabase_url)
+    db_host = f"db.{m.group(1)}.supabase.co" if m else ""
+
+    # Extract password from the postgres URI: postgresql://user:PASSWORD@host:port/db
+    m2 = re.search(r"://[^:]+:([^@]+)@", supabase_pg_uri)
+    db_password = m2.group(1) if m2 else ""
+
+    if not db_host:
+        print("  [WARN] Could not derive DB host from Project URL. Enter it manually:")
+        db_host = input("  Direct DB host (e.g. db.abc.supabase.co): ").strip()
+    if not db_password:
+        print("  [WARN] Could not extract password from PostgreSQL URI. Enter it manually:")
+        db_password = input("  DB password: ").strip()
+
+    print(f"\n  Derived direct DB host : {db_host}")
+
+    print("\n--- Airbyte Cloud (https://cloud.airbyte.com) ---")
+    print("  Go to: Settings > API keys to create or copy an API key.")
+    print("  Your workspace ID is in the URL: app.airbyte.com/workspaces/<workspace_id>")
+    airbyte_api_key = input("\n  API key: ").strip()
+    airbyte_workspace_id = input("  Workspace ID: ").strip()
+
+    credentials = {
+        "SUPABASE_PROJECT_URL_FROM_TASK_1": supabase_url,
+        "SUPABASE_ANON_KEY_FROM_TASK_1": supabase_anon_key,
+        "SUPABASE_POSTGRES_URL_FROM_TASK_1": supabase_pg_uri,
+        "SUPABASE_DB_HOST_FROM_TASK_1": db_host,
+        "SUPABASE_DB_PASSWORD_FROM_TASK_1": db_password,
+        "AIRBYTE_API_KEY_FROM_TASK_2": airbyte_api_key,
+        "AIRBYTE_WORKSPACE_ID_FROM_TASK_2": airbyte_workspace_id,
+    }
+    print(f"\n  {len(credentials)} credential values loaded.")
+    return credentials
+
+
 async def main():
     print("=" * 70)
     print("Session 7 — Live Integration Test")
@@ -106,7 +168,7 @@ async def main():
     # ------------------------------------------------------------------
     # Assemble messages
     # ------------------------------------------------------------------
-    print("\n[2] Assembling pre-published messages for BIAnalyticsEngineer...")
+    print("\n[2a] Assembling pre-published messages for BIAnalyticsEngineer...")
 
     brd_message = Message(
         content=brd_content,
@@ -125,18 +187,22 @@ async def main():
     )
 
     # ------------------------------------------------------------------
+    # Collect credentials before starting the agent (DEV-50)
+    # ------------------------------------------------------------------
+    print("\n[2b] Collecting credentials (required before agent session starts)...")
+    credentials = _collect_credentials()
+
+    # ------------------------------------------------------------------
     # Build team and run
     # ------------------------------------------------------------------
     print("\n[3] Starting BIAnalyticsEngineer (Alex) with Supabase execution plan...")
     print(f"    Budget: {N_ROUND} rounds")
     print()
-    print("NOTE: Alex will ask you for Supabase and Airbyte credentials.")
-    print("      Follow the instructions he provides to create free accounts")
-    print("      and supply the requested credentials interactively.")
-    print()
 
+    alex = BIAnalyticsEngineer()
+    alex.inject_credentials(credentials)
     team = Team(use_mgx=False)
-    team.hire([BIAnalyticsEngineer()])
+    team.hire([alex])
 
     env = team.env
     env.publish_message(brd_message)

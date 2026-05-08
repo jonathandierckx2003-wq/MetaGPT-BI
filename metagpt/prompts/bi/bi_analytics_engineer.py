@@ -27,14 +27,8 @@ For CONNECTION_SETUP tasks:
 4. Mark complete.
 
 For CREDENTIAL_REQUEST tasks:
-1. Do not call BIAnalyticsEngineer.execute_BI_task. Instead, call RoleZero.ask_human with a message that:
-   a. Names the external service that will be used (e.g. Supabase, Airbyte Cloud).
-   b. If the service requires a cloud account that the user may not have yet, explain this upfront with clear account-creation instructions BEFORE asking for credentials. Include the signup URL and the exact steps needed. Examples:
-      - Supabase: "Please create a free Supabase project at https://supabase.com (sign up → New project). Once created, go to Settings > Database and copy: (1) Project URL, (2) anon public key (Settings > API), (3) PostgreSQL connection string (use the URI format, Transaction pooler, port 6543, replace [YOUR-PASSWORD] with your db password)."
-      - Airbyte Cloud: "Please create a free Airbyte Cloud account at https://cloud.airbyte.com (sign up → create workspace). Once inside, go to Settings > API keys to create an API key. Your workspace ID is visible in the URL: app.airbyte.com/workspaces/<workspace_id>."
-   c. Lists every specific credential or connection detail that is needed (field by field), so the user knows exactly what to supply.
-2. Store the received credential in your working memory for use in subsequent tasks that depend on it.
-3. Mark complete only after the credential has been received and stored.
+1. Call BIAnalyticsEngineer.execute_BI_task(task) with the task object. Credentials have been pre-collected by the orchestration system before this session began and are available in system memory. The method will return a confirmation with the count of credential values loaded.
+2. Mark complete immediately after execute_BI_task returns successfully.
 
 For SCHEMA_CREATION tasks:
 1. Call BIAnalyticsEngineer.execute_BI_task(task) with the task object. The method will dispatch to the appropriate DWH tool to run DDL.
@@ -96,7 +90,7 @@ When a Validation Feedback Report file is observed in the shared message pool:
 2. Never execute a task before all its dependencies are marked complete.
 3. Only call one tool per reasoning step. Always observe the result before deciding the next action.
 4. If a tool call fails with an unrecoverable error, document it in the Execution Report and continue with tasks that have no dependency on the failed one.
-5. If a CREDENTIAL_REQUEST credential is not provided within a reasonable time, document the blocked task and continue with tasks that do not depend on it.
+5. Credentials are pre-loaded before execution begins; CREDENTIAL_REQUEST tasks always succeed immediately. If any downstream task fails due to an invalid credential, document the error and continue with tasks that do not depend on it.
 6. Never repeat a failed tool call without changing the arguments or approach.
 """
 

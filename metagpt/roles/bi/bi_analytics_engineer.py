@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+import re
 from pathlib import Path
 
 from metagpt.actions.bi.write_execution_plan import WriteExecutionPlan
@@ -53,6 +55,10 @@ class BIAnalyticsEngineer(RoleZero):
         self._completed_task_ids: list[str] = []
         self._active_task_id: str = ""
         self._failed_task_ids: list[str] = []
+        # DEV-50: credentials injected by run script before team.run(); task results stored
+        # after each dispatch for runtime placeholder substitution (e.g. destination_id).
+        self._credentials: dict[str, str] = {}
+        self._task_results: dict[str, dict] = {}
         # _dbt_runner and _duckdb_executor are created lazily by _get_dbt_runner() /
         # _get_duckdb_executor() — NOT initialized here because _update_tool_execution()
         # (called by RoleZero's model_validator during __init__) already creates them.
@@ -74,6 +80,53 @@ class BIAnalyticsEngineer(RoleZero):
         """Print status update to terminal (DEV-32 pattern)."""
         print(f"\n[Alex - BI Analytics Engineer]: {content}\n")
         return content
+
+    def inject_credentials(self, credentials: dict[str, str]) -> None:
+        """Pre-load credential values collected by the run script before team.run()."""
+        if not hasattr(self, "_credentials") or self._credentials is None:
+            self._credentials = {}
+        self._credentials.update(credentials)
+
+    def _substitute_placeholders(self, obj):
+        """Recursively replace placeholder strings with credentials or prior task results.
+
+        Handles two patterns:
+        - Direct key lookup in self._credentials (e.g. "SUPABASE_PROJECT_URL_FROM_TASK_1").
+        - Pattern "KEY_FROM_TASK_N": looks up task N result dict for a matching field.
+        """
+        creds = getattr(self, "_credentials", {})
+        results = getattr(self, "_task_results", {})
+
+        if isinstance(obj, str):
+            if obj in creds:
+                return creds[obj]
+            m = re.match(r"^(.+)_FROM_TASK_(\d+)$", obj)
+            if m:
+                key_part = m.group(1).lower().replace("_", "")
+                task_id = m.group(2)
+                for k, v in results.get(task_id, {}).items():
+                    if k.lower().replace("_", "") == key_part:
+                        return str(v)
+            return obj
+        if isinstance(obj, dict):
+            return {k: self._substitute_placeholders(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [self._substitute_placeholders(item) for item in obj]
+        return obj
+
+    def _extract_task_result(self, task_id: str, result: str) -> None:
+        """Parse dispatch result string as a dict for runtime placeholder substitution."""
+        results = getattr(self, "_task_results", None)
+        if results is None:
+            return
+        for parser in (ast.literal_eval, __import__("json").loads):
+            try:
+                parsed = parser(result)
+                if isinstance(parsed, dict):
+                    results[task_id] = parsed
+                    return
+            except Exception:
+                continue
 
     def _get_dbt_runner(self) -> DbtRunner:
         """Lazy-create and cache the DbtRunner instance.
@@ -134,8 +187,13 @@ class BIAnalyticsEngineer(RoleZero):
 
         self._active_task_id = str(task_id)
 
+        # DEV-50: substitute credential and runtime placeholders before dispatching
+        tool_args = self._substitute_placeholders(tool_args)
+
         try:
             result = self._dispatch(task_type, tool_name, tool_args)
+            # Store structured results (dicts) for downstream placeholder substitution
+            self._extract_task_result(str(task_id), result)
             self._completed_task_ids.append(str(task_id))
             self._active_task_id = ""
             return f"[Task {task_id}] COMPLETE — {result}"
@@ -149,11 +207,11 @@ class BIAnalyticsEngineer(RoleZero):
     def _dispatch(self, task_type: str, tool_name: str, tool_args: dict) -> str:
         """Route task to the appropriate Tool class based on task_type and tool_name."""
         if task_type == "CREDENTIAL_REQUEST":
-            return (
-                "CREDENTIAL_REQUEST task: do NOT call execute_BI_task for this task type. "
-                "Call RoleZero.ask_human with a clearly worded message specifying exactly which "
-                "credential is needed and for which system."
-            )
+            # DEV-50: credentials are pre-injected by the run script before team.run().
+            # This task type acts as a dependency gate; the actual collection happens outside
+            # the agent loop. Return confirmation so the LLM marks the task complete.
+            n = len(getattr(self, "_credentials", {}))
+            return f"CREDENTIAL_REQUEST acknowledged. {n} credential value(s) available in system memory."
 
         if tool_name == "DuckDBExecutor":
             return self._run_duckdb(task_type, tool_args)
