@@ -119,6 +119,21 @@ def _collect_credentials() -> dict[str, str]:
     else:
         db_user = db_password = db_host = ""
 
+    # Detect if the user pasted the format example literally instead of their real URI
+    if "REGION" in supabase_pg_uri or "PASSWORD" in supabase_pg_uri or "<" in supabase_pg_uri:
+        print("\n  [ERROR] The URI still contains placeholder text (REGION, PASSWORD, or <...>).")
+        print("  Go to: Supabase Dashboard → Settings → Database → Connection string")
+        print("  Select 'Session' mode and COPY the actual URI — do not type it manually.")
+        supabase_pg_uri = input("  Re-enter the actual PostgreSQL URI: ").strip()
+        uri_m = re.match(
+            r"(?:postgresql|postgres)://([^:@]+):([^@]+)@([^:/]+)(?::(\d+))?/(.+)",
+            supabase_pg_uri,
+        )
+        if uri_m:
+            db_user = uri_m.group(1)
+            db_password = uri_m.group(2)
+            db_host = uri_m.group(3)
+
     # Sanity-check extracted values
     for label, val, fallback_prompt in [
         ("host", db_host, "  PostgreSQL host (e.g. aws-0-eu-west-2.pooler.supabase.com): "),
