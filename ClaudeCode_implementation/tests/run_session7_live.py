@@ -94,42 +94,56 @@ def _collect_credentials() -> dict[str, str]:
     print("=" * 70)
 
     print("\n--- Supabase (https://supabase.com) ---")
-    print("  Go to: Project Settings > General to find your Project URL.")
+    print("  Go to: Project Settings > General for the Project URL.")
     print("  Go to: Project Settings > API for the anon public key.")
     print("  Go to: Project Settings > Database > Connection string > URI")
-    print("         (Transaction pooler, port 6543 — replace [YOUR-PASSWORD] with your db password)")
+    print("  IMPORTANT: Choose 'Session' mode (port 5432) from the dropdown —")
+    print("  NOT 'Transaction' mode (port 6543). Session mode supports all SQL")
+    print("  features that dbt needs. Replace [YOUR-PASSWORD] with your db password.")
+    print("  Session pooler URI format:")
+    print("    postgresql://postgres.<ref>:PASSWORD@aws-0-REGION.pooler.supabase.com:5432/postgres")
     supabase_url = input("\n  Project URL (e.g. https://abc.supabase.co): ").strip().rstrip("/")
     supabase_anon_key = input("  Anon public key: ").strip()
-    supabase_pg_uri = input("  PostgreSQL URI (Transaction pooler, port 6543): ").strip()
+    supabase_pg_uri = input("  PostgreSQL URI (Session pooler, port 5432): ").strip()
 
-    # Derive direct-connection DB host from project URL: https://REF.supabase.co -> db.REF.supabase.co
-    m = re.search(r"https?://([^.]+)\.supabase\.co", supabase_url)
-    db_host = f"db.{m.group(1)}.supabase.co" if m else ""
+    # Parse the postgres URI to extract host, user, password.
+    # URI format: postgresql://USER:PASSWORD@HOST:PORT/DB
+    uri_m = re.match(
+        r"(?:postgresql|postgres)://([^:@]+):([^@]+)@([^:/]+)(?::(\d+))?/(.+)",
+        supabase_pg_uri,
+    )
+    if uri_m:
+        db_user = uri_m.group(1)
+        db_password = uri_m.group(2)
+        db_host = uri_m.group(3)
+    else:
+        db_user = db_password = db_host = ""
 
-    # Extract password from the postgres URI: postgresql://user:PASSWORD@host:port/db
-    # Use the last colon-delimited segment before @ to handle any user-typo prefixes
-    m2 = re.search(r":([^:@]+)@", supabase_pg_uri)
-    db_password = m2.group(1) if m2 else ""
-    # Sanity-check: if extracted password looks like a URI fragment, ask manually
-    if not db_password or db_password.startswith("//") or len(db_password) > 128:
-        db_password = ""
+    # Sanity-check extracted values
+    for label, val, fallback_prompt in [
+        ("host", db_host, "  PostgreSQL host (e.g. aws-0-eu-west-2.pooler.supabase.com): "),
+        ("user", db_user, "  PostgreSQL user (e.g. postgres.abc): "),
+        ("password", db_password, "  DB password: "),
+    ]:
+        if not val:
+            print(f"  [WARN] Could not extract {label} from URI. Enter it manually:")
+            if label == "host":
+                db_host = input(fallback_prompt).strip()
+            elif label == "user":
+                db_user = input(fallback_prompt).strip()
+            else:
+                db_password = input(fallback_prompt).strip()
 
-    if not db_host:
-        print("  [WARN] Could not derive DB host from Project URL. Enter it manually:")
-        db_host = input("  Direct DB host (e.g. db.abc.supabase.co): ").strip()
-    if not db_password:
-        print("  [WARN] Could not extract DB password from PostgreSQL URI. Enter it manually:")
-        db_password = input("  DB password (the password in your postgres URI): ").strip()
-
-    print(f"\n  Derived direct DB host : {db_host}")
+    print(f"\n  Parsed: host={db_host}  user={db_user}")
 
     print("\n--- Airbyte Cloud (https://cloud.airbyte.com) ---")
     print("  To get your API key:")
-    print("    Go to: User Settings (top-right avatar) > Applications > Create application")
-    print("    Copy the generated client secret / API key.")
+    print("    Click your user avatar (bottom-left) > User Settings > Applications")
+    print("    > Create application. Copy the generated client secret / API key.")
     print("  To get your workspace ID:")
-    print("    Go to: Workspace Settings — the ID is in the URL:")
-    print("    app.airbyte.com/workspaces/<workspace_id>/settings")
+    print("    Click Workspace Settings (top-right gear icon). The ID appears in")
+    print("    the URL: app.airbyte.com/workspaces/<workspace_id>/settings")
+    print("    There is also a copy button next to it.")
     airbyte_api_key = input("\n  API key: ").strip()
     airbyte_workspace_id = input("  Workspace ID: ").strip()
 
@@ -138,12 +152,13 @@ def _collect_credentials() -> dict[str, str]:
         "SUPABASE_ANON_KEY_FROM_TASK_1": supabase_anon_key,
         "SUPABASE_POSTGRES_URL_FROM_TASK_1": supabase_pg_uri,
         "SUPABASE_DB_HOST_FROM_TASK_1": db_host,
+        "SUPABASE_DB_USER_FROM_TASK_1": db_user,
         "SUPABASE_DB_PASSWORD_FROM_TASK_1": db_password,
         "AIRBYTE_API_KEY_FROM_TASK_2": airbyte_api_key,
         "AIRBYTE_WORKSPACE_ID_FROM_TASK_2": airbyte_workspace_id,
     }
     print(f"\n  {len(credentials)} credential values loaded.")
-    return credentials
+    return credentials  # 8 values (added SUPABASE_DB_USER_FROM_TASK_1 vs prior 7)
 
 
 async def main():

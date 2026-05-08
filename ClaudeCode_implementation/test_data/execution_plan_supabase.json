@@ -42,7 +42,7 @@
         "host": "SUPABASE_DB_HOST_FROM_TASK_1",
         "port": 5432,
         "database": "postgres",
-        "username": "postgres",
+        "username": "SUPABASE_DB_USER_FROM_TASK_1",
         "password": "SUPABASE_DB_PASSWORD_FROM_TASK_1",
         "schema": "public",
         "ssl_mode": {"mode": "require"}
@@ -93,7 +93,7 @@
       "db_type": "postgres",
       "host": "SUPABASE_DB_HOST_FROM_TASK_1",
       "port": 5432,
-      "user": "postgres",
+      "user": "SUPABASE_DB_USER_FROM_TASK_1",
       "password": "SUPABASE_DB_PASSWORD_FROM_TASK_1",
       "dbname": "postgres",
       "schema": "public"
