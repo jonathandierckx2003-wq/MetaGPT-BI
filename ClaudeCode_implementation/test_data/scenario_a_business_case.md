@@ -43,11 +43,17 @@ A Data Warehouse that gives analysts a single, clean analytical layer to answer 
 
 ## Key KPIs
 
-- Total revenue and average order value (by category, season, subscription status)
-- Discount rate and promo code redemption rate
-- Product conversion rate (purchases / views per category)
-- Customer purchase frequency distribution
-- Average review rating per category
+| KPI | Formula | Granularity |
+|-----|---------|-------------|
+| Total Revenue | SUM(Purchase Amount USD) | By category, season, subscription status, week |
+| Average Order Value | Total Revenue / COUNT(transactions) | By category, subscription status |
+| Discount Rate | COUNT(Discount Applied = Yes) / COUNT(all transactions) | By category, season |
+| Promo Code Redemption Rate | COUNT(Promo Code Used = Yes) / COUNT(all transactions) | By subscription status, season |
+| Product Conversion Rate | COUNT(interaction type = purchase) / COUNT(interaction type = view) | By category |
+| Customer Purchase Frequency Distribution | Distribution of customers by Frequency of Purchases field (Weekly / Fortnightly / Monthly / Quarterly / Annually) | Snapshot segmentation — no time grain |
+| Average Review Rating | AVG(Review Rating) | By category, season |
+
+**Source mapping:** KPIs 1–4 and 7 derive from `customer_details.csv`. KPI 5 derives from `interactions_2024.csv` joined to `product_details.csv` for category. KPI 6 derives from `customer_details.csv`.
 
 ---
 
