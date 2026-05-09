@@ -80,6 +80,7 @@ Write-Host "      Done."
 Write-Host "[5/8] Installing BI-specific packages..."
 $biPackages = @(
     "duckdb==1.5.2",
+    "websockets>=12.0",
     "dbt-core",
     "dbt-duckdb",
     "dbt-postgres",
@@ -124,7 +125,7 @@ Write-Host "[8/8] Checking LLM configuration..."
 if (-not (Test-Path "config\config2.yaml")) {
     if (Test-Path "config\config2.yaml.example") {
         Copy-Item "config\config2.yaml.example" "config\config2.yaml"
-        Write-Host "      Copied config2.yaml.example → config2.yaml" -ForegroundColor Yellow
+        Write-Host "      Copied config2.yaml.example -> config2.yaml" -ForegroundColor Yellow
         Write-Host "      ACTION REQUIRED: Edit config\config2.yaml and add your LLM API key." -ForegroundColor Yellow
     } else {
         Write-Host "      WARNING: config\config2.yaml not found. Create it before running metagpt-bi." -ForegroundColor Yellow
@@ -138,18 +139,27 @@ if (-not (Test-Path "config\config2.yaml")) {
 # ------------------------------------------------------------------
 Write-Host ""
 Write-Host "Verifying key imports..."
-$imports = @(
-    "import duckdb; print('  duckdb OK')",
-    "import psycopg2; print('  psycopg2 OK')",
-    "import supabase; print('  supabase OK')",
-    "import airbyte_api; print('  airbyte_api OK')",
-    "import dbt.version; print('  dbt-core OK')",
-    "from metagpt.roles.bi.bi_requirements_analyst import BIRequirementsAnalyst; print('  BIRequirementsAnalyst OK')",
-    "from metagpt.roles.bi.bi_analytics_engineer import BIAnalyticsEngineer; print('  BIAnalyticsEngineer OK')",
-    "from metagpt.roles.bi.bi_qa_engineer import BIQAEngineer; print('  BIQAEngineer OK')"
-)
-foreach ($imp in $imports) {
-    python -c $imp
+
+# Tool library checks
+python -c "import duckdb; print('  duckdb OK')"
+python -c "import psycopg2; print('  psycopg2 OK')"
+python -c "import supabase; print('  supabase OK')"
+python -c "import airbyte_api; print('  airbyte_api OK')"
+python -c "import dbt.version; print('  dbt-core OK')"
+
+# BI agent checks via bi_team.py --help (applies the semantic_kernel stub before
+# importing metagpt, which is required because the stub must precede all metagpt imports)
+Write-Host "  Checking BI agent imports (via bi_team.py)..."
+python bi_team.py --help > $null 2>&1
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "  BIRequirementsAnalyst OK"
+    Write-Host "  BIDataModeler OK"
+    Write-Host "  BISolutionArchitect OK"
+    Write-Host "  BIAnalyticsEngineer OK"
+    Write-Host "  BIQAEngineer OK"
+} else {
+    Write-Host "  WARNING: bi_team.py --help failed. Run it manually to see the error:" -ForegroundColor Yellow
+    Write-Host "    python bi_team.py --help" -ForegroundColor Yellow
 }
 
 # ------------------------------------------------------------------
@@ -161,12 +171,27 @@ Write-Host "  Setup complete!"
 Write-Host ""
 Write-Host "  Next steps:"
 Write-Host "  1. Edit config\config2.yaml and set your LLM API key"
-Write-Host "  2. Place CSV source files in workspace\data\"
-Write-Host "  3. Activate the venv in future sessions:"
+Write-Host "  2. Activate the venv in future sessions:"
 Write-Host "       .\venv\Scripts\Activate.ps1"
+Write-Host "  3. (Optional) Place flat CSV or Excel source files in workspace\data\"
+Write-Host "     if your scenario uses local files."
+Write-Host "     If your data comes from an online source (Airbyte, Supabase, APIs),"
+Write-Host "     Alice will ask you for connection details during the conversation."
 Write-Host "  4. Run your first BI pipeline:"
-Write-Host "       metagpt-bi `"I need a sales BI dashboard. I have CSV files.`""
+Write-Host "     - Try your own scenario:"
+Write-Host "         metagpt-bi `"Describe your BI project here`""
+Write-Host "     - Or reproduce a PoC scenario from the thesis:"
+Write-Host "         Scenario A (CSV -> DuckDB, no accounts needed):"
+Write-Host "           metagpt-bi `"I need a BI solution for weekly sales analysis."
+Write-Host "             I have CSV files in workspace/data/. I want a local DuckDB warehouse.`""
+Write-Host "         Scenario B (Airbyte Faker API -> Supabase, free cloud accounts needed):"
+Write-Host "           metagpt-bi `"I need a BI solution for e-commerce analysis."
+Write-Host "             My data comes from Airbyte Cloud. I want Supabase as my cloud DWH.`""
+Write-Host "         Scenario C (CSV -> Supabase, free Supabase account needed):"
+Write-Host "           metagpt-bi `"I need a BI solution for sales analysis."
+Write-Host "             I have CSV files in workspace/data/. I want Supabase as my DWH.`""
 Write-Host ""
 Write-Host "  Run 'metagpt-bi --help' for all options."
+Write-Host "  See README.md for full documentation and troubleshooting."
 Write-Host "============================================================"
 Write-Host ""
