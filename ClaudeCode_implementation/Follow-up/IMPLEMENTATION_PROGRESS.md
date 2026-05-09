@@ -1078,3 +1078,42 @@ workspace/
   runs/       # each metagpt-bi invocation creates workspace/runs/<timestamp>/
   archive/    # all prior test round artifacts (for reference)
 ```
+
+### Session 9 continuation — Scenario A live run + bug fixes (2026-05-09)
+
+Carried out in the same conversation after a second context compaction.
+
+#### Scenario A live run results
+
+Two live run attempts of the full Scenario A pipeline (CSV files → local DuckDB) were made on 2026-05-09 using `metagpt-bi "I need a BI solution for e-commerce sales analysis..."`. Both terminal sessions were recorded using `Start-Transcript`.
+
+| Run | Outcome | Root cause |
+|-----|---------|-----------|
+| First run | CRASHED mid-elicitation | Alice received a path with a leading backslash (`\workspace\data\E-commerece sales data 2024.csv`); `DataSourceInspector.inspect_csv` raised `FileNotFoundError` which propagated as an unhandled exception and terminated the process |
+| Second run | COMPLETED Alice phase only; pipeline stopped | Alice completed elicitation and wrote the BRD using `Editor.write` + `end` directly — bypassing `BIRequirementsAnalyst.generate_brd()` → `WriteBRD` message never published → Bob (BIDataModeler) never triggered |
+
+**Transcripts:** Full terminal transcripts saved to `ClaudeCode_implementation/tests/transcripts/`:
+- `run_A_duckdb_20260509_151827.txt` — second run (archive copy, Alice-only)
+
+#### Bugs identified and fixed
+
+| DEV | Bug | Fix applied |
+|-----|-----|-------------|
+| DEV-64 | Pipeline stops after Alice: `generate_brd()` not called, `WriteBRD` never published, Bob never activated | Added MANDATORY block to Phase 2 of `metagpt/prompts/bi/bi_requirements_analyst.py` |
+| DEV-65 | Leading-backslash path crashes pipeline: `inspect_csv` raises `FileNotFoundError` that propagates to process termination | `inspect_csv` and `inspect_excel` now strip leading separator and retry; return error dict instead of raising |
+| DEV-66 | Token counting always 0 for `gpt-5.4-mini`: model absent from TOKEN_COSTS and known-models set | Added `gpt-5.4-mini` to both in `metagpt/utils/token_counter.py` |
+
+#### Files modified
+
+| File | Change |
+|------|--------|
+| `metagpt/prompts/bi/bi_requirements_analyst.py` | Phase 2 MANDATORY block added (DEV-64) |
+| `metagpt/tools/bi/data_source_inspector.py` | `inspect_csv` and `inspect_excel`: backslash-path resilience + error dict instead of raise (DEV-65) |
+| `metagpt/utils/token_counter.py` | `gpt-5.4-mini` added to TOKEN_COSTS and known-models set (DEV-66) |
+
+#### Transcript location standardised
+
+Live run transcripts moved from `workspace/archive/` (gitignored) to `ClaudeCode_implementation/tests/transcripts/` (committed) for thesis documentation. New `Start-Transcript` command for future runs:
+```powershell
+Start-Transcript -Path "ClaudeCode_implementation\tests\transcripts\run_<scenario>_<dwh>_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
+```

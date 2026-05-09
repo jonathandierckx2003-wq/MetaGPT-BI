@@ -24,12 +24,20 @@ class DataSourceInspector:
 
         Returns:
             Dict with 'file', 'row_count', and 'columns' (list of {name, dtype, sample}).
+            If the file cannot be found, returns a dict with an 'error' key instead of raising.
         """
         import pandas as pd
 
         path = Path(file_path)
+        # Paths starting with a separator (e.g. \workspace\...) are treated as absolute on Windows
+        # and resolve to the drive root. Try stripping the leading separator to make them relative.
+        if not path.exists() and file_path.startswith(("/", "\\")):
+            path = Path(".") / file_path.lstrip("/\\")
         if not path.exists():
-            raise FileNotFoundError(f"File not found: {file_path}")
+            return {
+                "error": f"File not found: {file_path}. "
+                "Please provide the correct relative path (e.g. workspace/data/my_file.csv)."
+            }
 
         df = pd.read_csv(file_path, nrows=5)
         full_df = pd.read_csv(file_path)
@@ -68,10 +76,15 @@ class DataSourceInspector:
         import pandas as pd
 
         path = Path(file_path)
+        if not path.exists() and file_path.startswith(("/", "\\")):
+            path = Path(".") / file_path.lstrip("/\\")
         if not path.exists():
-            raise FileNotFoundError(f"File not found: {file_path}")
+            return {
+                "error": f"File not found: {file_path}. "
+                "Please provide the correct relative path (e.g. workspace/data/my_file.xlsx)."
+            }
 
-        xl = pd.ExcelFile(file_path)
+        xl = pd.ExcelFile(str(path))
         sheets = []
         for sheet_name in xl.sheet_names:
             df = xl.parse(sheet_name)

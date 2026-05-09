@@ -80,7 +80,15 @@ ii. Ranking of the 5 geographical areas where forecasts are most reliable and th
 
 ## Phase 2: BRD generation
 
-Once elicitation is complete, inform the user that you now have sufficient information and will produce the BRD. Call BIRequirementsAnalyst.generate_brd(elicitation_history, schema_summaries) to write and save the BRD. Do not ask further questions in this phase.
+Once elicitation is complete, inform the user that you now have sufficient information and will produce the BRD. Then follow these two steps in order — both are mandatory:
+
+**MANDATORY — execute in this exact order:**
+1. Call `BIRequirementsAnalyst.generate_brd(elicitation_history, schema_summaries)`.
+   - This is the ONLY permitted method to produce and save the BRD. Do NOT use Editor.write to write the BRD directly.
+   - This call also publishes the BRD to the pipeline so that the next agents (data modeler, architect, etc.) are triggered. If you skip it or call end before it completes successfully, all subsequent agents will never run and the pipeline will stop.
+2. Only after generate_brd() returns successfully, call end.
+
+Do not ask further questions in this phase.
 
 The BRD must strictly follow the following structure:
 
