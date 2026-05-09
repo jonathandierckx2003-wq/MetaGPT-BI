@@ -1534,3 +1534,73 @@ When `_validation_round >= validation_round_allowed` and the outcome is REJECTED
 
 **Why:**  
 `BIAnalyticsEngineer` watches for `WriteValidationReport` messages. If the exhausted-rounds report were published with `cause_by=WriteValidationReport`, Alex would be re-triggered for a correction cycle that cannot succeed (the round limit has already been reached). Saving to a distinct path and suppressing publication ensures Alex is never re-triggered, the pipeline stops cleanly, and the human user can inspect the failure report at its known location.
+
+---
+
+## Session 9 pre-logged items
+
+### LIM-02 — CSV → Supabase scenario not supported; to be resolved in Session 9
+
+**Current state:**  
+The two implemented scenarios use matched ingestion–target pairs:
+- Scenario A: local CSV files → DuckDB (via `PandasLoader`, DuckDB-specific)
+- Scenario B: Airbyte Faker API → Supabase (via `AirbyteConnector`)
+
+A third scenario — local CSV files → Supabase/PostgreSQL — is not supported because `PandasLoader` writes directly into DuckDB using `duckdb.read_csv_auto()` and cannot target a PostgreSQL database.
+
+**Resolution planned for Session 9:**  
+Add `SupabaseConnector.load_csv(file_path, table_name, schema="public")` method that:
+1. Reads the CSV file with pandas (`pd.read_csv(file_path)`)
+2. Creates the target table in Supabase via `run_ddl()` (inferring column types from the DataFrame)
+3. Bulk-inserts rows using `psycopg2.extras.execute_values()` over the existing `self._conn` direct PostgreSQL connection
+4. Returns the row count
+
+One additional line needed in `BIAnalyticsEngineer._dispatch()`: route `DATA_INGESTION` tasks with `tool: "SupabaseConnector"` to `SupabaseConnector.load_csv()`. The existing `tool: "PandasLoader"` path for DuckDB is unchanged.
+
+This gives a complete scenario matrix:
+
+| Scenario | Ingestion tool | Target DWH | Status |
+|----------|---------------|-----------|--------|
+| A | PandasLoader.load_file() | DuckDB | ✅ Tested (Session 6) |
+| B | AirbyteConnector (Faker API) | Supabase | ✅ Tested (Session 7) |
+| C | SupabaseConnector.load_csv() | Supabase | ➕ Session 9 |
+
+**Files to change:** `metagpt/tools/bi/supabase_connector.py` (add method), `metagpt/roles/bi/bi_analytics_engineer.py` (one dispatch line).
+
+---
+
+### LIM-03 — Agent 1 cannot inspect Airbyte sources during elicitation; schema discovery deferred to Agent 4
+
+**Current state:**  
+`DataSourceInspector` has `inspect_csv()`, `inspect_postgres()`, and `inspect_api()` (generic HTTP). For Airbyte-sourced data, Agent 1 (Alice) cannot discover the stream schema during Phase 1 elicitation because:
+1. The Airbyte source may not yet exist in the workspace at elicitation time.
+2. Even if it does, querying Airbyte's catalog API (`GET /v1/sources/{sourceId}/discover_schema`) requires an OAuth token and a source ID that Alice does not currently obtain.
+
+As a result, the BRD for Airbyte scenarios is written based on the user's verbal description of the data, and actual schema validation happens at Agent 4's execution time (DATA_INGESTION tasks).
+
+**Improvement planned for Session 9:**  
+Add `DataSourceInspector.inspect_airbyte_source(workspace_id, source_id, client_id, client_secret)` that:
+1. Exchanges `client_id`/`client_secret` for a Bearer token (reusing the OAuth logic already in `AirbyteConnector.configure()`)
+2. Calls `GET /v1/sources/{source_id}/discover_schema`
+3. Returns a structured schema dict: `{stream_name: [{field, type}, ...]}`
+
+**Pre-condition for Scenario B:** The Airbyte Faker source must already exist in the user's Airbyte Cloud workspace at elicitation time. It can be created in one click in the Airbyte Cloud UI ("Add source → Sample Data (Faker)") or by running Agent 4's INSTANTIATION task first. The source created in Session 7 (`connection_id: a115119f-c7a0-40c3-87d0-68ab4f99bd6d`) may still exist.
+
+**Alice's elicitation flow with this improvement:**  
+If the user says "I have data accessible through Airbyte", Alice recognises the source type and asks for workspace ID, client ID, client secret, and source ID. She then calls `DataSourceInspector.inspect_airbyte_source()` and receives the actual stream schemas to base the BRD on.
+
+**Files to change:** `metagpt/tools/bi/data_source_inspector.py` (add method), `metagpt/prompts/bi/bi_requirements_analyst.py` (add inspect_airbyte_source to the Core tools section).
+
+---
+
+### NOTE — README: adding a new external tool requires 5 steps including prompt updates
+
+When documenting how to extend the system in the README (planned post-Session 9), the developer instructions for adding a new external tool must include **all five** of the following steps:
+
+1. **Write the tool class** in `metagpt/tools/bi/<tool_name>.py` and decorate with `@register_tool` if the LLM should call it directly.
+2. **Add to the agent's `tools` list** in the role class (e.g. `metagpt/roles/bi/bi_analytics_engineer.py`) — this makes the tool's schema visible to the LLM via `TOOL_REGISTRY`.
+3. **Wire the callable** in `_update_tool_execution()` in the same role class — without this the RoleZero dispatcher cannot find the method even if the LLM selects it.
+4. **Update `_dispatch()` / `execute_BI_task()`** if the tool handles a new task type or a new ingestion/execution path for Agent 4.
+5. **Update the agent's prompt** (`metagpt/prompts/bi/bi_<agent>.py`) — add the tool name and its key methods to the "Core tools" section. This is the step most likely to be forgotten, and without it the LLM will not know the tool exists at reasoning time even if it appears in the schema registry.
+
+Steps 2 and 3 are often confused: step 2 makes the schema available, step 3 makes the callable available. Both are required.

@@ -20,7 +20,7 @@ A transposition of the MetaGPT Software Company multi-agent system into the Busi
 | 6 | BIAnalyticsEngineer (Agent 4) + standalone test + live e2e test (DuckDB scenario) | ✅ Complete |
 | 7 | Scenario 2 live test: Supabase + Airbyte + dbt-postgres (requires accounts — see LIM-01) | ✅ Complete |
 | 8 | BIQAEngineer (Agent 5) + standalone test (37/37) + live e2e test (DuckDB — REJECTED, empty fact tables) | ✅ Complete |
-| 9 | bi_team.py + full end-to-end pipeline tests (both scenarios) | ⏳ Pending |
+| 9 | bi_team.py + per-run workspace isolation + SupabaseConnector.load_csv() (LIM-02) + DataSourceInspector.inspect_airbyte_source() (LIM-03) + full e2e tests (3 scenarios) + README | ⏳ Pending |
 
 ---
 
