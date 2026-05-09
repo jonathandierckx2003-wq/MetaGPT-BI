@@ -19,9 +19,9 @@ Three CSV files are exported weekly from NovaMart's operational systems:
 |------|-----------------|
 | `customer_details.csv` | One row per purchase transaction — item bought, amount, customer demographics (age, gender, location), subscription status, discount/promo use, review score, payment method, purchase frequency |
 | `product_details.csv` | Product catalogue — product ID, name, brand, category, list price, selling price, stock; also contains long text columns (descriptions, specs, image URLs) that are irrelevant for analytics |
-| `E-commerece sales data 2024.csv` | One row per platform event — customer viewed, liked, or purchased a product (user ID + product ID + event type + timestamp) |
+| `E-commerce_sales_data.csv` | One row per platform event — customer viewed, liked, or purchased a product (user ID + product ID + event type + timestamp) |
 
-The product ID in `E-commerece sales data 2024.csv` matches the `Unique Id` in `product_details.csv`. The customer ID in `E-commerece sales data 2024.csv` matches `Customer ID` in `customer_details.csv`.
+The product ID in `E-commerce_sales_data.csv` matches the `Unique Id` in `product_details.csv`. The customer ID in `E-commerce_sales_data.csv` matches `Customer ID` in `customer_details.csv`.
 
 ---
 
@@ -53,7 +53,7 @@ A Data Warehouse that gives analysts a single, clean analytical layer to answer 
 | Customer Purchase Frequency Distribution | Distribution of customers by Frequency of Purchases field (Weekly / Fortnightly / Monthly / Quarterly / Annually) | Snapshot segmentation — no time grain |
 | Average Review Rating | AVG(Review Rating) | By category, season |
 
-**Source mapping:** KPIs 1–4 and 7 derive from `customer_details.csv`. KPI 5 derives from `E-commerece sales data 2024.csv` joined to `product_details.csv` for category. KPI 6 derives from `customer_details.csv`.
+**Source mapping:** KPIs 1–4 and 7 derive from `customer_details.csv`. KPI 5 derives from `E-commerce_sales_data.csv` joined to `product_details.csv` for category. KPI 6 derives from `customer_details.csv`.
 
 ---
 
