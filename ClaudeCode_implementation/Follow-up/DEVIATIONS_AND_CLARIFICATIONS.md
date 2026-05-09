@@ -1604,3 +1604,27 @@ When documenting how to extend the system in the README (planned post-Session 9)
 5. **Update the agent's prompt** (`metagpt/prompts/bi/bi_<agent>.py`) — add the tool name and its key methods to the "Core tools" section. This is the step most likely to be forgotten, and without it the LLM will not know the tool exists at reasoning time even if it appears in the schema registry.
 
 Steps 2 and 3 are often confused: step 2 makes the schema available, step 3 makes the callable available. Both are required.
+
+---
+
+### NOTE — Session 9 e2e tests must start from a clean workspace
+
+**Problem:** Sessions 6, 7, and 8 all write to the same `workspace/` directory. By the end of Session 8, `workspace/` contains a mix of DuckDB artifacts (from Session 6), Supabase artifacts (from Session 7 which overwrote Session 6), and the REJECTED validation report (from Session 8). Running Session 9's full pipeline tests against this contaminated state would produce misleading results.
+
+**Two complementary solutions to implement in Session 9:**
+
+1. **Per-run workspace isolation in `bi_team.py`** (see workspace isolation note above): each `bi_team.py` invocation creates a fresh `workspace/runs/<timestamp_or_run_name>/` subdirectory. Editor and all agents write there. No cross-run contamination possible by design.
+
+2. **Workspace reset utility**: the Session 9 e2e test scripts (and the `bi_team.py` help text) should document how to reset the workspace to a clean state before a fresh run:
+   - If using per-run isolation: no reset needed — just start a new run.
+   - If re-running with the default `workspace/` path: delete or archive `workspace/docs/`, `workspace/dwh.duckdb`, `dbt_projects/bi_dwh/` before starting. The `workspace/data/` CSV files are source data and should be left in place.
+
+**What "clean" means per scenario:**
+
+| Artifact | DuckDB scenario | Supabase scenario |
+|----------|----------------|------------------|
+| `workspace/docs/` | delete all .md and .json files | delete all .md and .json files |
+| `workspace/dwh.duckdb` | delete | not applicable |
+| `dbt_projects/bi_dwh/` | delete | delete |
+| Supabase tables | not applicable | drop via Supabase Studio or psql |
+| `workspace/data/*.csv` | keep (source data) | keep (Scenario C only) |
