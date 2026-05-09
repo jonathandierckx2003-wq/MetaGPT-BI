@@ -107,6 +107,7 @@ setup(
     license="MIT",
     keywords="metagpt multi-agent multi-role programming gpt llm metaprogramming",
     packages=find_packages(exclude=["contrib", "docs", "examples", "tests*"]),
+    py_modules=["bi_team"],
     python_requires=">=3.9, <3.12",
     install_requires=requirements,
     extras_require=extras_require,
@@ -116,6 +117,7 @@ setup(
     entry_points={
         "console_scripts": [
             "metagpt=metagpt.software_company:app",
+            "metagpt-bi=bi_team:cli_entry",
         ],
     },
     include_package_data=True,

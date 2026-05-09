@@ -922,3 +922,159 @@ OK
 **Note on synthetic execution report:** `workspace/docs/execution_report.md` was also overwritten by Session 7, so the live test embeds a synthetic DuckDB execution report inline. This is the correct long-term design for Session 9 (full pipeline test), where Alex will produce a fresh DuckDB report.
 
 **Validation report written to:** `workspace/docs/validation_feedback_report.md`
+
+---
+
+## Session 9 — bi_team.py + per-run workspace isolation + LIM-02 + LIM-03
+
+**Goal:** Complete the PoC with the full 5-agent entry point (`bi_team.py`), per-run workspace isolation, two tool additions (LIM-02: CSV→Supabase, LIM-03: Airbyte schema inspection during elicitation), interactive credential collection in Agent 4, and comprehensive smoke tests for all new functionality.
+
+### Session plan status
+
+| Session | Scope | Status |
+|---------|-------|--------|
+| 9 | bi_team.py + per-run workspace isolation + SupabaseConnector.load_csv() (LIM-02) + DataSourceInspector.inspect_airbyte_source() (LIM-03) + bi_analytics_engineer ask_human override (DEV-63) + publish_execution_report path fix (DEV-62) + LLM cost summary + smoke tests + README | ✅ Complete |
+
+### Files created
+
+#### `bi_team.py` (repo root)
+Full 5-agent entry point for the MetaGPT-BI PoC. Key design decisions:
+
+| Feature | Implementation |
+|---------|---------------|
+| **semantic_kernel stub** | `_stub_semantic_kernel()` at top of file — same pattern as all live test runners; required before any MetaGPT import because `metagpt.roles.di.role_zero` imports from semantic_kernel which may not be installed |
+| **Per-run workspace isolation** | `_setup_workspace(run_name)` creates `workspace/runs/<YYYYMMDD_HHMMSS>/docs/` (or `workspace/runs/<run_name>/` with `--run-name`); sets `config.workspace.path = run_dir.resolve()` before `team.run()` — all Editor writes go to the per-run directory |
+| **Team assembly** | `Team(use_mgx=False)` with all 5 agents hired (DEV-20); `team.run_project(user_requirement)` + `team.run(n_round=n_round)` |
+| **LLM cost summary** | After `team.run()`: reads `team.cost_manager.total_prompt_tokens`, `total_completion_tokens`, `total_cost`; appends `## LLM Cost Summary` markdown table to `validation_feedback_report.md` (or `failed_validation_report.md`); prints to terminal |
+| **argparse** | `user_requirement` (positional), `--rounds N` (default 200), `--run-name NAME` |
+| **DEFAULT_N_ROUND** | 200 — generous budget for full 5-agent pipeline; Team stops early when all agents go idle |
+
+**Usage:**
+```bash
+python bi_team.py "I need a BI solution for my weekly sales analysis. I have CSV files."
+python bi_team.py "I want a cloud BI setup" --rounds 250
+python bi_team.py "..." --run-name my_run_001
+```
+
+#### `ClaudeCode_implementation/tests/test_session9_bi_team.py`
+31 standalone smoke tests across 7 test classes. All pass without LLM calls or live API connections.
+
+| Class | Tests | What is verified |
+|-------|-------|-----------------|
+| `TestSupabaseConnectorLoadCSV` | 6 | `load_csv` method exists, correct signature, `schema` defaults to `"public"`, requires connection before use, docstring mentions `load_csv`, `_run_supabase()` routes DATA_INGESTION to `load_csv()` |
+| `TestDataSourceInspectorAirbyteSource` | 7 | `inspect_airbyte_source` method exists, correct signature (workspace_id/source_id/client_id/client_secret/base_url), `base_url` has Airbyte default, docstring mentions pre-condition, wired in Alice's `tool_execution_map`, prompt mentions `inspect_airbyte_source`, raises RuntimeError on bad token exchange |
+| `TestPublishExecutionReportPath` | 2 | source code does NOT contain `Path("workspace")` hardcoded path, source code references `config.workspace.path` |
+| `TestBIAnalyticsEngineerAskHuman` | 2 | `ask_human` is defined directly on `BIAnalyticsEngineer` (not just inherited), `ask_human` is a coroutine function |
+| `TestBiTeamModule` | 9 | `main` is a coroutine, `_setup_workspace` exists, `DEFAULT_N_ROUND >= 150`, imports cleanly, all 5 agent class names present in source, `use_mgx=False` present, argparse has `user_requirement` / `--rounds` / `--run-name` |
+| `TestWorkspaceIsolation` | 1 | `_setup_workspace("my_test_run")` runs without exception; `config.workspace.path` is set |
+| `TestAnalyticsEngineerPromptCredentials` | 4 | EXTRA_INSTRUCTION mentions `ask_human`, `working memory`, warns against `placeholder`, mentions `sign-up` |
+
+**Result: 31/31 tests pass.**
+
+### Files modified
+
+#### `metagpt/tools/bi/supabase_connector.py` — LIM-02
+Added `load_csv(file_path, table_name, schema="public")` method:
+- Reads CSV via `pd.read_csv(file_path)`
+- Infers PostgreSQL column types from pandas dtypes
+- Creates table if not exists via `run_ddl()` (`CREATE TABLE IF NOT EXISTS`)
+- Bulk-inserts rows via `psycopg2.extras.execute_values(page_size=500)`
+- Returns confirmation string with row count
+- Class docstring updated to add `load_csv` to the Key methods list
+
+#### `metagpt/tools/bi/data_source_inspector.py` — LIM-03
+Added `inspect_airbyte_source(workspace_id, source_id, client_id, client_secret, base_url="https://api.airbyte.com/v1")` method:
+- Exchanges `client_id`/`client_secret` for Bearer token via `POST {api_base}/applications/token` (reuses AirbyteConnector.configure() OAuth2 pattern from DEV-55)
+- Calls `POST {api_base}/sources/{source_id}/discover_schema`
+- Parses catalog: handles JSON Schema `["string", "null"]` type arrays by picking non-null type
+- Returns `{"source_id": ..., "workspace_id": ..., "streams": {stream_name: [{name, type}, ...]}}`
+- Raises `RuntimeError("token exchange failed ...")` on HTTP non-2xx from token endpoint
+
+#### `metagpt/roles/bi/bi_requirements_analyst.py` — LIM-03
+- `_update_tool_execution()` now includes `"DataSourceInspector.inspect_airbyte_source": inspector.inspect_airbyte_source`
+
+#### `metagpt/prompts/bi/bi_requirements_analyst.py` — LIM-03
+- Core tools section expanded: all 5 DataSourceInspector methods listed with descriptions; `inspect_airbyte_source` added with signature and usage guidance (pre-condition: source must already exist in workspace; ask user for workspace_id, source_id, client_id, client_secret)
+- Data sources elicitation topic updated to mention Airbyte sources
+
+#### `metagpt/roles/bi/bi_analytics_engineer.py` — DEV-62, DEV-63, LIM-02
+- **DEV-62:** `publish_execution_report()` path changed from `Path("workspace") / "docs"` to `Path(config.workspace.path) / "docs"` — per-run isolation compatibility
+- **DEV-63:** `ask_human` override added:
+  ```python
+  async def ask_human(self, question: str) -> str:
+      print(f"\n[Alex - BI Analytics Engineer]: {question}\n")
+      loop = asyncio.get_running_loop()
+      response = await loop.run_in_executor(None, input, "Your response: ")
+      return response.strip()
+  ```
+- **LIM-02:** `_run_supabase()` routes `DATA_INGESTION` tasks to `connector.load_csv()` (file_path, target_table/table_name, schema from tool_args)
+- Imports: `asyncio` and `from metagpt.config2 import config` added
+
+#### `metagpt/prompts/bi/bi_analytics_engineer.py` — DEV-63
+- **CREDENTIAL_REQUEST section** updated to interactive thesis design:
+  1. Call `RoleZero.ask_human` with clearly worded message (system, credential type, where to find it; include sign-up URL and steps if account creation is needed)
+  3. Store received value in working memory
+  4. Call `BIAnalyticsEngineer.execute_BI_task(task)` to mark complete
+  5. Pass actual values in subsequent task `tool_args` — NOT placeholder strings
+- **Constraint #5** updated: CREDENTIAL_REQUEST can also be acknowledged by pre-injected credentials (DEV-50 pattern remains supported)
+
+### Deviations logged
+
+| DEV/LIM | Summary |
+|---------|---------|
+| DEV-62 | `publish_execution_report()` hardcoded path replaced with `config.workspace.path` — required for per-run isolation |
+| DEV-63 | `ask_human` override added to BIAnalyticsEngineer; CREDENTIAL_REQUEST updated to interactive thesis design (DEV-50 pre-injection also supported) |
+| LIM-02 | RESOLVED: `SupabaseConnector.load_csv()` implemented; Scenario C (CSV → Supabase) now supported |
+| LIM-03 | RESOLVED: `DataSourceInspector.inspect_airbyte_source()` implemented and wired into Alice's tool_execution_map |
+
+### Smoke test results
+
+```
+Ran 31 tests in 1.2s
+OK
+```
+
+### Live e2e tests
+
+The full pipeline is invoked via `bi_team.py` — no separate e2e test script. See README.md for complete commands and per-scenario setup instructions.
+
+**Status:** Commands documented in README.md. Live e2e runs require LLM API key + (for cloud scenarios) Supabase and Airbyte Cloud accounts. Results will vary by LLM and scenario.
+
+### Session plan updated
+
+| Session | Scope | Status |
+|---------|-------|--------|
+| 9 | bi_team.py + per-run workspace isolation + LIM-02 + LIM-03 + DEV-62 + DEV-63 + LLM cost summary + smoke tests (31/31) + README | ✅ Complete |
+
+### Session 9 continuation — README finalization and workspace cleanup
+
+Carried out in the same conversation after context compaction.
+
+#### Files modified
+
+| File | Change |
+|------|--------|
+| `README.md` | Thesis title corrected to full official title and subtitle: "Where AI Adds Value: Designing a BI development Multi-Agent Architecture — A Contextual Transposition of Software Engineering Patterns" (Double degree UNamur / KU Leuven, 2026) |
+| `README.md` | "Acknowledgements" section added with two subsections: (1) **Claude Code** — acknowledges AI-assisted implementation, directs readers to `ClaudeCode_implementation/` for methodology; (2) **Thesis context** — full thesis title, programme, and institutions |
+
+#### Workspace cleanup
+
+All prior test run artifacts moved to `workspace/archive/` to give future `metagpt-bi` runs a clean starting point:
+
+| Moved to archive | Contents |
+|-----------------|----------|
+| `archive/sessions_1_to_8/docs/` | All session 3–8 BI artifacts (BRD, schemas, execution plan/report, validation report) |
+| `archive/sessions_1_to_8/dwh.duckdb` | 31 MB DuckDB warehouse from session 6 (contaminated by session 7 dbt models) |
+| `archive/game_snake/` | MetaGPT upstream demo output (snake game project, unrelated to BI PoC) |
+| `archive/20260506150939/` | Old MetaGPT test run directory from session 1 |
+| `archive/workspace_nested/` | Nested `workspace/workspace/` dir created by a path bug in session 7/8 |
+| `archive/storage/` | MetaGPT team state JSON (87 MB team.json from prior runs) |
+| `archive/logs/` | dbt.log from sessions 6–7 |
+
+Remaining active workspace structure after cleanup:
+```
+workspace/
+  data/       # place source CSV/Excel files here before running metagpt-bi
+  runs/       # each metagpt-bi invocation creates workspace/runs/<timestamp>/
+  archive/    # all prior test round artifacts (for reference)
+```

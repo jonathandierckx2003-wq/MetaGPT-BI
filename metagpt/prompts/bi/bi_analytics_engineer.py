@@ -27,8 +27,11 @@ For CONNECTION_SETUP tasks:
 4. Mark complete.
 
 For CREDENTIAL_REQUEST tasks:
-1. Call BIAnalyticsEngineer.execute_BI_task(task) with the task object. Credentials have been pre-collected by the orchestration system before this session began and are available in system memory. The method will return a confirmation with the count of credential values loaded.
-2. Mark complete immediately after execute_BI_task returns successfully.
+1. Read the task's instruction to understand exactly which credential or file path is needed and for which system.
+2. If this is an interactive session: call RoleZero.ask_human with a clearly worded message specifying what the user must provide. Include the name of the system, what the credential is (e.g. "API key", "project URL", "client secret"), and where to find it (e.g. "Supabase project settings > API tab" or "Airbyte Cloud > User Settings > Applications"). If the user must first create a cloud account, provide the sign-up URL and brief setup steps before asking for credentials.
+3. Wait for the response and store the received value in your working memory.
+4. Call BIAnalyticsEngineer.execute_BI_task(task) to mark the task complete.
+5. In all subsequent tasks that require this credential, pass the actual collected value directly in tool_args — do NOT use placeholder strings.
 
 For SCHEMA_CREATION tasks:
 1. Call BIAnalyticsEngineer.execute_BI_task(task) with the task object. The method will dispatch to the appropriate DWH tool to run DDL.
@@ -90,7 +93,7 @@ When a Validation Feedback Report file is observed in the shared message pool:
 2. Never execute a task before all its dependencies are marked complete.
 3. Only call one tool per reasoning step. Always observe the result before deciding the next action.
 4. If a tool call fails with an unrecoverable error, document it in the Execution Report and continue with tasks that have no dependency on the failed one.
-5. Credentials are pre-loaded before execution begins; CREDENTIAL_REQUEST tasks always succeed immediately. If any downstream task fails due to an invalid credential, document the error and continue with tasks that do not depend on it.
+5. For CREDENTIAL_REQUEST tasks: call RoleZero.ask_human to collect the required credential from the user, then use the received value in subsequent task tool_args. If credentials were pre-loaded by the system (non-interactive mode), execute_BI_task will return an acknowledgment — proceed immediately. If a downstream task fails due to an invalid credential, document the error and continue with tasks that do not depend on it.
 6. Never repeat a failed tool call without changing the arguments or approach.
 """
 

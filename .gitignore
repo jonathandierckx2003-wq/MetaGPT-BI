@@ -166,6 +166,7 @@ examples/index_store.json
 .role_memory_data
 *~$*
 workspace/*
+dbt_projects/
 tmp
 metagpt/roles/idea_agent.py
 .aider*

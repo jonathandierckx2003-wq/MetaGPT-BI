@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import re
 from pathlib import Path
 
+from metagpt.config2 import config
 from metagpt.actions.bi.write_execution_plan import WriteExecutionPlan
 from metagpt.actions.bi.write_execution_report import WriteExecutionReport
 from metagpt.actions.bi.write_validation_report import WriteValidationReport
@@ -80,6 +82,18 @@ class BIAnalyticsEngineer(RoleZero):
         """Print status update to terminal (DEV-32 pattern)."""
         print(f"\n[Alex - BI Analytics Engineer]: {content}\n")
         return content
+
+    async def ask_human(self, question: str) -> str:
+        """Ask the user for input during CREDENTIAL_REQUEST tasks (DEV-63 / thesis design).
+
+        Overrides RoleZero.ask_human so it works in the terminal async context —
+        RoleZero.ask_human only works inside MGXEnv. Uses run_in_executor to avoid
+        blocking the event loop (same pattern as BIRequirementsAnalyst.ask_human).
+        """
+        print(f"\n[Alex - BI Analytics Engineer]: {question}\n")
+        loop = asyncio.get_running_loop()
+        response = await loop.run_in_executor(None, input, "Your response: ")
+        return response.strip()
 
     def inject_credentials(self, credentials: dict[str, str]) -> None:
         """Pre-load credential values collected by the run script before team.run()."""
@@ -335,6 +349,14 @@ class BIAnalyticsEngineer(RoleZero):
                 ddl = "\n".join(ddl)
             ddl_result = connector.run_ddl(ddl)
             return f"{result} | {ddl_result}"
+        if task_type == "DATA_INGESTION":
+            # LIM-02: CSV → Supabase ingestion via SupabaseConnector.load_csv()
+            load_result = connector.load_csv(
+                file_path=tool_args.get("file_path", ""),
+                table_name=tool_args.get("target_table", tool_args.get("table_name", "")),
+                schema=tool_args.get("schema", "public"),
+            )
+            return f"{result} | {load_result}"
         return result
 
     def _run_airbyte(self, task_type: str, tool_args: dict) -> str:
@@ -366,7 +388,8 @@ class BIAnalyticsEngineer(RoleZero):
         Returns:
             Confirmation message, or an error if the file does not exist yet.
         """
-        report_path = Path("workspace") / "docs" / "execution_report.md"
+        # DEV-62: use config workspace path so per-run isolation in bi_team.py works correctly.
+        report_path = Path(config.workspace.path) / "docs" / "execution_report.md"
         if not report_path.exists():
             return (
                 "Error: workspace/docs/execution_report.md not found. "

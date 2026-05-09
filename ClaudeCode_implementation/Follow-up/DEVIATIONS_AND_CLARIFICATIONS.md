@@ -1628,3 +1628,159 @@ Steps 2 and 3 are often confused: step 2 makes the schema available, step 3 make
 | `dbt_projects/bi_dwh/` | delete | delete |
 | Supabase tables | not applicable | drop via Supabase Studio or psql |
 | `workspace/data/*.csv` | keep (source data) | keep (Scenario C only) |
+
+---
+
+## Session 9 deviations
+
+### DEV-62 — `publish_execution_report()` hardcoded path replaced with `config.workspace.path`
+
+**Discovered during:** Session 9 implementation of per-run workspace isolation.
+
+**Problem:**
+`BIAnalyticsEngineer.publish_execution_report()` contained a hardcoded `Path("workspace") / "docs" / "execution_report.md"` path. When `bi_team.py` sets `config.workspace.path = workspace/runs/<timestamp>/`, MetaGPT's Editor writes all artifacts to the per-run directory — but `publish_execution_report()` was still looking for the report at the root `workspace/docs/` path. The file would not exist there, and the QA Engineer would never be triggered.
+
+**Implementation:**
+Changed the path to:
+```python
+report_path = Path(config.workspace.path) / "docs" / "execution_report.md"
+```
+This matches the path used by MetaGPT's Editor when `config.workspace.path` is set to the per-run directory by `bi_team.py`. For test scripts that do not call `_setup_workspace()`, `config.workspace.path` defaults to `workspace/` — preserving backward compatibility.
+
+**Why:**
+Per-run isolation is a key Session 9 feature. Without this fix, every run after the first would fail silently: the execution report would be written to the correct per-run path, but `publish_execution_report()` would report "Report file not found" and never publish to the shared message pool, leaving the QA Engineer idle.
+
+**Files changed:** `metagpt/roles/bi/bi_analytics_engineer.py`
+
+---
+
+### DEV-63 — `ask_human` override added to BIAnalyticsEngineer; CREDENTIAL_REQUEST updated to interactive thesis design
+
+**Theoretical design:**
+The thesis design specified that during a CREDENTIAL_REQUEST task, Agent 4 (Alex) would ask the user interactively for credentials (API keys, project URLs) during the pipeline run — including providing sign-up links and instructions if the user does not yet have an account.
+
+**Problem:**
+DEV-50 (Session 7) changed CREDENTIAL_REQUEST handling to a pre-injection / placeholder-substitution pattern because `ask_human` in the async `team.run()` loop proved unreliable for multi-value credential collection. This was documented as a practical PoC compromise. However, for the full `bi_team.py` entry point (the thesis demo), the interactive design should be supported.
+
+`BIAnalyticsEngineer` did not override `ask_human`, so it inherited the RoleZero default which returns "Not in MGXEnv, command will not be executed." in terminal mode.
+
+**Implementation:**
+1. **`ask_human` override added to `BIAnalyticsEngineer`** — same pattern as DEV-15 (BIRequirementsAnalyst):
+   ```python
+   async def ask_human(self, question: str) -> str:
+       print(f"\n[Alex - BI Analytics Engineer]: {question}\n")
+       loop = asyncio.get_running_loop()
+       response = await loop.run_in_executor(None, input, "Your response: ")
+       return response.strip()
+   ```
+
+2. **`metagpt/prompts/bi/bi_analytics_engineer.py` CREDENTIAL_REQUEST section updated:**
+   - Step 1: Call `RoleZero.ask_human` with a clearly worded message (system, credential type, where to find it; include sign-up URL and steps if account creation is needed).
+   - Step 3: Store the received value in working memory.
+   - Step 4: Call `BIAnalyticsEngineer.execute_BI_task(task)` to mark complete.
+   - Step 5: Pass actual collected values in subsequent task `tool_args` — NOT placeholder strings.
+   - Constraint #5 updated to note that pre-injection (non-interactive) mode (DEV-50 pattern) also works: `execute_BI_task` returns an acknowledgment if credentials were pre-loaded.
+
+**Why:**
+The thesis design is the primary demo path; pre-injection (DEV-50) remains available as a robustness fallback for test scripts. The `ask_human` override ensures the interactive path actually works in terminal mode. The two designs are compatible: if credentials are pre-injected, `execute_BI_task` handles CREDENTIAL_REQUEST acknowledgment transparently; if not, the LLM calls `ask_human` and the user provides them live.
+
+**Files changed:** `metagpt/roles/bi/bi_analytics_engineer.py`, `metagpt/prompts/bi/bi_analytics_engineer.py`
+
+---
+
+### LIM-02 — RESOLVED: `SupabaseConnector.load_csv()` implemented (CSV → Supabase scenario)
+
+**Original limitation (pre-logged in Session 8):**
+No tool could load local CSV files into a Supabase/PostgreSQL target. Scenario C (CSV → Supabase) was therefore unsupported.
+
+**Resolution (Session 9):**
+`SupabaseConnector.load_csv(file_path, table_name, schema="public")` implemented:
+1. Reads CSV with pandas `pd.read_csv(file_path)`.
+2. Infers PostgreSQL column types from pandas dtypes (`int` → `BIGINT`, `float` → `DOUBLE PRECISION`, `bool` → `BOOLEAN`, `datetime` → `TIMESTAMP`, else → `TEXT`).
+3. Creates the table if it does not exist via `run_ddl()` (`CREATE TABLE IF NOT EXISTS`).
+4. Bulk-inserts all rows via `psycopg2.extras.execute_values(page_size=500)` over the existing direct PostgreSQL connection.
+5. Returns a confirmation string with row count.
+
+Additionally, `BIAnalyticsEngineer._run_supabase()` routes `DATA_INGESTION` tasks to `connector.load_csv()`:
+```python
+if task_type == "DATA_INGESTION":
+    load_result = connector.load_csv(
+        file_path=tool_args.get("file_path", ""),
+        table_name=tool_args.get("target_table", tool_args.get("table_name", "")),
+        schema=tool_args.get("schema", "public"),
+    )
+    return f"{result} | {load_result}"
+```
+
+**Complete scenario matrix after Session 9:**
+
+| Scenario | Ingestion tool | Target DWH | Status |
+|----------|---------------|-----------|--------|
+| A | PandasLoader.load_file() | DuckDB | ✅ Tested (Session 6) |
+| B | AirbyteConnector (Faker API) | Supabase | ✅ Tested (Session 7) |
+| C | SupabaseConnector.load_csv() | Supabase | ✅ Implemented (Session 9) |
+
+**Files changed:** `metagpt/tools/bi/supabase_connector.py`, `metagpt/roles/bi/bi_analytics_engineer.py`
+
+---
+
+### LIM-03 — RESOLVED: `DataSourceInspector.inspect_airbyte_source()` implemented; wired into Alice's elicitation
+
+**Original limitation (pre-logged in Session 8):**
+Agent 1 (Alice) could not inspect Airbyte sources during elicitation. The BRD for Airbyte scenarios was based on verbal description only.
+
+**Resolution (Session 9):**
+`DataSourceInspector.inspect_airbyte_source(workspace_id, source_id, client_id, client_secret, base_url="https://api.airbyte.com/v1")` implemented:
+1. Exchanges `client_id` / `client_secret` for a Bearer token via `POST {api_base}/applications/token` — reuses the same OAuth2 flow as `AirbyteConnector.configure()` (DEV-55).
+2. Calls `POST {api_base}/sources/{source_id}/discover_schema` to retrieve the catalog.
+3. Parses the catalog: for each stream, builds a `{field_name: type}` dict, resolving JSON Schema `["string", "null"]` array types by picking the non-null type.
+4. Returns `{"source_id": ..., "workspace_id": ..., "streams": {stream_name: [{name, type}, ...]}}`.
+
+**Pre-condition:** The Airbyte source must already exist in the user's workspace. Alice asks for `workspace_id`, `source_id`, `client_id`, and `client_secret` before calling this method.
+
+**Wired into Alice's `tool_execution_map`:**
+```python
+"DataSourceInspector.inspect_airbyte_source": inspector.inspect_airbyte_source,
+```
+
+**`bi_requirements_analyst.py` prompt updated:** Added `inspect_airbyte_source` to the Core tools section with its signature and usage guidance; updated the data sources elicitation topic to mention Airbyte sources.
+
+**Design note:** The pre-condition (source must already exist) is a limitation inherent to the Airbyte Cloud API — Alice cannot create a source during elicitation. This is documented as expected in the thesis: the user creates the Airbyte source first (one click in Airbyte Cloud UI), then provides the IDs to Alice for schema discovery.
+
+**Files changed:** `metagpt/tools/bi/data_source_inspector.py`, `metagpt/roles/bi/bi_requirements_analyst.py`, `metagpt/prompts/bi/bi_requirements_analyst.py`
+
+---
+
+### NOTE — bi_team.py LLM cost summary
+
+**New feature (Session 9):**
+`bi_team.py` now appends a `## LLM Cost Summary` markdown table to the validation feedback report (or failed validation report) after `team.run()` completes. The summary is also printed to the terminal. Values are read from MetaGPT's `CostManager`:
+
+```python
+cm = team.cost_manager
+prompt_tokens = cm.total_prompt_tokens
+completion_tokens = cm.total_completion_tokens
+total_cost_usd = cm.total_cost
+```
+
+This gives the human user a direct cost estimate at the end of each pipeline run, visible in both the terminal output and the final artifact delivered by the QA Engineer.
+
+**Files changed:** `bi_team.py`
+
+---
+
+### NOTE — README thesis title corrected; Claude Code acknowledgement section added (Session 9 continuation)
+
+**Thesis title correction:**
+The short thesis description in `README.md` was updated from a working description to the final official title and subtitle:
+> "Where AI Adds Value: Designing a BI development Multi-Agent Architecture —  
+> A Contextual Transposition of Software Engineering Patterns"  
+> Jonathan Dierckx — Double degree Master's student, UNamur / KU Leuven, 2026
+
+**Acknowledgements section added to README.md:**
+Two new subsections under a dedicated "Acknowledgements" heading (placed between "Based on MetaGPT" and "Implementation sessions"):
+
+1. **Claude Code** — states that the implementation was AI-assisted via [Claude Code](https://claude.ai/code) (Anthropic), and directs readers to `ClaudeCode_implementation/` for the full record of how the implementation was performed (IMPLEMENTATION_PROGRESS.md, DEVIATIONS_AND_CLARIFICATIONS.md, tests/).
+2. **Thesis context** — provides the full title, programme, and institutions for readers wanting the full academic framing.
+
+**Files changed:** `README.md` (documentation only — no code changes)

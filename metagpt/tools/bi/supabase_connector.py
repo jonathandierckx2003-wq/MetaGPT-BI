@@ -10,7 +10,7 @@ TAGS = ["bi", "supabase", "dwh", "postgres"]
 
 @register_tool(tags=TAGS)
 class SupabaseConnector:
-    """Interact with a Supabase (PostgreSQL) database: DDL, queries, and data quality checks.
+    """Interact with a Supabase (PostgreSQL) database: DDL, queries, data loading, and data quality checks.
 
     Supabase exposes a standard PostgreSQL connection that this class accesses
     directly via psycopg2.  The connect() method accepts either the PostgreSQL
@@ -20,6 +20,9 @@ class SupabaseConnector:
     For read-only SELECT queries the supabase-py REST client is also available
     via the supabase_client() helper, but all methods on this class use the
     direct PostgreSQL connection for full DDL support.
+
+    Key methods: run_ddl, run_query, verify_table, list_tables, get_table_schema,
+    check_pk_uniqueness, check_fk_integrity, load_csv, supabase_client.
     """
 
     MAX_RETRIES = 3
@@ -222,6 +225,65 @@ class SupabaseConnector:
         )
         orphan_count = rows[0]["orphan_count"]
         return {"valid": orphan_count == 0, "orphan_count": orphan_count}
+
+    def load_csv(self, file_path: str, table_name: str, schema: str = "public") -> str:
+        """Load a CSV file into a Supabase (PostgreSQL) table using bulk insert.
+
+        Reads the CSV with pandas, creates the target table if it does not exist
+        (inferring column types from pandas dtypes), then bulk-inserts all rows
+        via psycopg2.extras.execute_values for efficiency.
+
+        Args:
+            file_path: Path to the CSV file.
+            table_name: Target table name (without schema prefix).
+            schema: PostgreSQL schema (default 'public').
+
+        Returns:
+            Confirmation string with row count.
+
+        Raises:
+            RuntimeError: If no active PostgreSQL connection or insert fails.
+        """
+        self._require_connection()
+        import pandas as pd
+        from psycopg2 import extras as pg_extras
+
+        df = pd.read_csv(file_path)
+        row_count = len(df)
+
+        def _pg_type(dtype) -> str:
+            s = str(dtype)
+            if "int" in s:
+                return "BIGINT"
+            if "float" in s:
+                return "DOUBLE PRECISION"
+            if "bool" in s:
+                return "BOOLEAN"
+            if "datetime" in s:
+                return "TIMESTAMP"
+            return "TEXT"
+
+        col_defs = ", ".join(f'"{col}" {_pg_type(df[col].dtype)}' for col in df.columns)
+        ddl = f'CREATE TABLE IF NOT EXISTS {schema}."{table_name}" ({col_defs})'
+        self.run_ddl(ddl)
+
+        qualified = f'{schema}."{table_name}"'
+        col_list = ", ".join(f'"{col}"' for col in df.columns)
+        insert_sql = f"INSERT INTO {qualified} ({col_list}) VALUES %s"
+
+        # Replace NaN with None so psycopg2 maps them to NULL
+        df = df.where(pd.notna(df), None)
+        values = [tuple(row) for row in df.itertuples(index=False, name=None)]
+
+        cur = self._conn.cursor()
+        try:
+            pg_extras.execute_values(cur, insert_sql, values, page_size=500)
+            cur.close()
+        except Exception as exc:
+            cur.close()
+            raise RuntimeError(f"CSV load into '{qualified}' failed: {exc}") from exc
+
+        return f"Loaded {row_count} rows from '{file_path}' into {qualified}."
 
     def supabase_client(self):
         """Return an initialized supabase-py client for REST API operations.

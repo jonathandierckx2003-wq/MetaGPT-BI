@@ -134,6 +134,97 @@ class DataSourceInspector:
 
         return {"db_path": db_path, "tables": tables}
 
+    def inspect_airbyte_source(
+        self,
+        workspace_id: str,
+        source_id: str,
+        client_id: str,
+        client_secret: str,
+        base_url: str = "https://api.airbyte.com/v1",
+    ) -> dict[str, Any]:
+        """Inspect an Airbyte source and return its stream schemas.
+
+        Uses the Airbyte Cloud API to discover the schema of an existing source
+        connector. Requires OAuth2 client credentials (client_id + client_secret)
+        from Airbyte Cloud > User Settings > Applications.
+
+        Pre-condition: The Airbyte source must already exist in the workspace.
+        It can be created via the Airbyte Cloud UI (Settings > Sources > Add source)
+        or by running the relevant INSTANTIATION task in Agent 4.
+
+        Args:
+            workspace_id: Airbyte Cloud workspace ID (visible in the workspace URL).
+            source_id: ID of the existing Airbyte source connector to inspect.
+            client_id: OAuth2 client ID from Airbyte Cloud Applications.
+            client_secret: OAuth2 client secret from Airbyte Cloud Applications.
+            base_url: Airbyte API base URL (default: https://api.airbyte.com/v1).
+
+        Returns:
+            Dict with 'source_id', 'workspace_id', and 'streams'
+            (a dict mapping stream name to a list of {name, type} field dicts).
+        """
+        import requests as _requests
+
+        api_base = base_url.rstrip("/")
+
+        # OAuth2 token exchange — same pattern as AirbyteConnector.configure() (DEV-55)
+        token_resp = _requests.post(
+            f"{api_base}/applications/token",
+            json={
+                "grant_type": "client_credentials",
+                "client_id": client_id,
+                "client_secret": client_secret,
+            },
+            headers={"Content-Type": "application/json"},
+            timeout=30,
+        )
+        if token_resp.status_code != 200:
+            raise RuntimeError(
+                f"Airbyte token exchange failed (HTTP {token_resp.status_code}): {token_resp.text}. "
+                "Verify client_id and client_secret in Airbyte Cloud > User Settings > Applications."
+            )
+        access_token = token_resp.json()["access_token"]
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        }
+
+        # Discover schema — POST /v1/sources/{sourceId}/discover_schema
+        schema_resp = _requests.post(
+            f"{api_base}/sources/{source_id}/discover_schema",
+            headers=headers,
+            json={},
+            timeout=90,
+        )
+        if schema_resp.status_code != 200:
+            raise RuntimeError(
+                f"Airbyte discover_schema failed (HTTP {schema_resp.status_code}): {schema_resp.text}. "
+                f"Verify source_id='{source_id}' exists in workspace '{workspace_id}'."
+            )
+        schema_data = schema_resp.json()
+
+        # Parse response: catalog.streams[].stream.{name, jsonSchema.properties}
+        streams: dict[str, list[dict[str, str]]] = {}
+        catalog = schema_data.get("catalog", {}) or {}
+        for stream_entry in catalog.get("streams", []):
+            stream = stream_entry.get("stream", {})
+            stream_name = stream.get("name", "unknown")
+            properties = stream.get("jsonSchema", {}).get("properties", {})
+            fields = []
+            for field_name, field_schema in properties.items():
+                field_type = field_schema.get("type", "string")
+                if isinstance(field_type, list):
+                    # JSON Schema allows ["string", "null"] — pick the non-null type
+                    field_type = next((t for t in field_type if t != "null"), "string")
+                fields.append({"name": field_name, "type": str(field_type)})
+            streams[stream_name] = fields
+
+        return {
+            "source_id": source_id,
+            "workspace_id": workspace_id,
+            "streams": streams,
+        }
+
     def inspect_postgres(self, connection_string: str) -> dict[str, Any]:
         """Inspect a PostgreSQL database and return all public tables with column info and row counts.
 

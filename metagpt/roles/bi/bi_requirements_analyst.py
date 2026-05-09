@@ -62,6 +62,8 @@ class BIRequirementsAnalyst(RoleZero):
             "DataSourceInspector.inspect_excel": inspector.inspect_excel,
             "DataSourceInspector.inspect_duckdb": inspector.inspect_duckdb,
             "DataSourceInspector.inspect_postgres": inspector.inspect_postgres,
+            # LIM-03: inspect Airbyte source streams during elicitation
+            "DataSourceInspector.inspect_airbyte_source": inspector.inspect_airbyte_source,
         })
 
     async def ask_human(self, question: str) -> str:
