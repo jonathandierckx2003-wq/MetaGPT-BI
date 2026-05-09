@@ -78,13 +78,20 @@ Write-Host "      Done."
 # 5. Install BI-specific packages
 # ------------------------------------------------------------------
 Write-Host "[5/8] Installing BI-specific packages..."
+Write-Host ""
+Write-Host "      NOTE: pip will report several dependency conflict warnings during this step." -ForegroundColor DarkYellow
+Write-Host "      These are EXPECTED and do not prevent the system from running." -ForegroundColor DarkYellow
+Write-Host "      They arise from version pinning in MetaGPT's original requirements.txt" -ForegroundColor DarkYellow
+Write-Host "      conflicting with newer BI-specific packages. All imports are verified at the end." -ForegroundColor DarkYellow
+Write-Host ""
+
 $biPackages = @(
     "duckdb==1.5.2",
-    "websockets>=12.0",
+    "websockets>=12.0",        # supabase realtime requires websockets.asyncio (added in v12)
     "dbt-core",
     "dbt-duckdb",
     "dbt-postgres",
-    "supabase",
+    "supabase==2.29.0",        # pinned to tested version; newer releases require pydantic>=2.11.7
     "psycopg2-binary",
     "pandas",
     "openpyxl"
@@ -148,10 +155,16 @@ python -c "import airbyte_api; print('  airbyte_api OK')"
 python -c "import dbt.version; print('  dbt-core OK')"
 
 # BI agent checks via bi_team.py --help (applies the semantic_kernel stub before
-# importing metagpt, which is required because the stub must precede all metagpt imports)
+# importing metagpt, which is required because the stub must precede all metagpt imports).
+# $ErrorActionPreference is temporarily relaxed: metagpt's logger writes an INFO line to
+# stderr at import time, which PowerShell would otherwise treat as a fatal NativeCommandError.
 Write-Host "  Checking BI agent imports (via bi_team.py)..."
+$savedPref = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
 python bi_team.py --help > $null 2>&1
-if ($LASTEXITCODE -eq 0) {
+$biImportOk = ($LASTEXITCODE -eq 0)
+$ErrorActionPreference = $savedPref
+if ($biImportOk) {
     Write-Host "  BIRequirementsAnalyst OK"
     Write-Host "  BIDataModeler OK"
     Write-Host "  BISolutionArchitect OK"
