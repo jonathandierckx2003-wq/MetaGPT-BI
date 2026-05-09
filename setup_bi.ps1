@@ -1,4 +1,4 @@
-# setup_bi.ps1 — One-time setup script for MetaGPT-BI on Windows
+# setup_bi.ps1 - One-time setup script for MetaGPT-BI on Windows
 # Run from the repo root in PowerShell:
 #   .\setup_bi.ps1
 #
@@ -66,7 +66,7 @@ Write-Host "      Virtual environment active."
 # ------------------------------------------------------------------
 # 4. Install MetaGPT-BI in editable mode
 # ------------------------------------------------------------------
-Write-Host "[4/8] Installing MetaGPT-BI (editable mode — registers metagpt-bi command)..."
+Write-Host "[4/8] Installing MetaGPT-BI (editable mode - registers metagpt-bi command)..."
 pip install -e . --quiet
 if ($LASTEXITCODE -ne 0) {
     Write-Host "ERROR: pip install -e . failed" -ForegroundColor Red
@@ -93,8 +93,8 @@ foreach ($pkg in $biPackages) {
     pip install $pkg --quiet
 }
 
-# airbyte-api may be removed by pip during dbt-postgres install (protobuf conflict) — always reinstall last
-Write-Host "      Installing airbyte-api==0.53.0 (pinned — protobuf conflict workaround)..."
+# airbyte-api may be removed by pip during dbt-postgres install (protobuf conflict) - always reinstall last
+Write-Host "      Installing airbyte-api==0.53.0 (pinned - protobuf conflict workaround)..."
 pip install "airbyte-api==0.53.0" --quiet
 
 Write-Host "      All BI packages installed."
