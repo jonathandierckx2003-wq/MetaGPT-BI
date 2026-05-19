@@ -1,0 +1,207 @@
+[
+  {
+    "task_id": "1",
+    "dependent_task_ids": [],
+    "instruction": "Initialize the cloud data warehouse target in Supabase/PostgreSQL for the PrimeShelf BI solution.",
+    "task_type": "INSTANTIATION",
+    "tool": "SupabaseConnector",
+    "tool_args": {
+      "warehouse": "Supabase/PostgreSQL",
+      "workspace_name": "PrimeShelf Marketplace Analytics BI Solution"
+    }
+  },
+  {
+    "task_id": "2",
+    "dependent_task_ids": ["1"],
+    "instruction": "Request the Supabase project URL, API key, and PostgreSQL connection string required to connect to the cloud warehouse.",
+    "task_type": "CREDENTIAL_REQUEST",
+    "tool": null,
+    "tool_args": null
+  },
+  {
+    "task_id": "3",
+    "dependent_task_ids": ["1", "2"],
+    "instruction": "Set up the Airbyte Cloud connection for the already configured Sample Data (Faker) source and enable daily full-refresh-overwrite syncs for the users, products, and purchases streams into the Supabase/PostgreSQL warehouse.",
+    "task_type": "CONNECTION_SETUP",
+    "tool": "AirbyteConnector",
+    "tool_args": {
+      "source_name": "Sample Data (Faker)",
+      "streams": ["users", "products", "purchases"],
+      "sync_mode": "full-refresh-overwrite",
+      "schedule": "daily",
+      "destination": "Supabase/PostgreSQL"
+    }
+  },
+  {
+    "task_id": "4",
+    "dependent_task_ids": ["3"],
+    "instruction": "Create the raw landing tables in Supabase/PostgreSQL for the Airbyte-loaded source streams users, products, and purchases.",
+    "task_type": "SCHEMA_CREATION",
+    "tool": "SupabaseConnector",
+    "tool_args": {
+      "tables": [
+        {
+          "table_name": "raw_users",
+          "columns": [
+            {"name": "id", "type": "text"},
+            {"name": "name", "type": "text"},
+            {"name": "email", "type": "text"},
+            {"name": "gender", "type": "text"},
+            {"name": "age", "type": "integer"},
+            {"name": "company", "type": "text"}
+          ]
+        },
+        {
+          "table_name": "raw_products",
+          "columns": [
+            {"name": "id", "type": "text"},
+            {"name": "name", "type": "text"},
+            {"name": "description", "type": "text"},
+            {"name": "store_name", "type": "text"},
+            {"name": "list_price", "type": "numeric"}
+          ]
+        },
+        {
+          "table_name": "raw_purchases",
+          "columns": [
+            {"name": "id", "type": "text"},
+            {"name": "customer_id", "type": "text"},
+            {"name": "product_id", "type": "text"},
+            {"name": "quantity", "type": "integer"},
+            {"name": "revenue", "type": "numeric"},
+            {"name": "store_name", "type": "text"},
+            {"name": "purchase_date", "type": "date"}
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "task_id": "5",
+    "dependent_task_ids": ["4"],
+    "instruction": "Create the dimensional model tables in Supabase/PostgreSQL: dim_customer, dim_product, dim_store, dim_date, and fact_purchases.",
+    "task_type": "SCHEMA_CREATION",
+    "tool": "SupabaseConnector",
+    "tool_args": {
+      "tables": [
+        {
+          "table_name": "dim_customer",
+          "columns": [
+            {"name": "customer_id", "type": "text", "primary_key": true},
+            {"name": "name", "type": "text"},
+            {"name": "email", "type": "text"},
+            {"name": "gender", "type": "text"},
+            {"name": "age", "type": "integer"},
+            {"name": "company", "type": "text"},
+            {"name": "customer_segment", "type": "text"}
+          ]
+        },
+        {
+          "table_name": "dim_product",
+          "columns": [
+            {"name": "product_id", "type": "text", "primary_key": true},
+            {"name": "name", "type": "text"},
+            {"name": "description", "type": "text"},
+            {"name": "store_name", "type": "text"},
+            {"name": "list_price", "type": "numeric"}
+          ]
+        },
+        {
+          "table_name": "dim_store",
+          "columns": [
+            {"name": "store_name", "type": "text", "primary_key": true}
+          ]
+        },
+        {
+          "table_name": "dim_date",
+          "columns": [
+            {"name": "date_key", "type": "integer", "primary_key": true},
+            {"name": "purchase_date", "type": "date"},
+            {"name": "year", "type": "integer"},
+            {"name": "month", "type": "integer"},
+            {"name": "day", "type": "integer"},
+            {"name": "day_of_week", "type": "text"}
+          ]
+        },
+        {
+          "table_name": "fact_purchases",
+          "columns": [
+            {"name": "purchase_id", "type": "text", "primary_key": true},
+            {"name": "customer_id", "type": "text"},
+            {"name": "product_id", "type": "text"},
+            {"name": "store_name", "type": "text"},
+            {"name": "date_key", "type": "integer"},
+            {"name": "quantity", "type": "integer"},
+            {"name": "revenue", "type": "numeric"}
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "task_id": "6",
+    "dependent_task_ids": ["5"],
+    "instruction": "Build the dim_customer transformation from raw_users, deriving customer_segment from company as B2B when company is not null and consumer when company is null.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "model_name": "dim_customer",
+      "source_table": "raw_users",
+      "target_table": "dim_customer",
+      "sql_model_path": "dbt/models/dim_customer.sql"
+    }
+  },
+  {
+    "task_id": "7",
+    "dependent_task_ids": ["5"],
+    "instruction": "Build the dim_product transformation from raw_products.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "model_name": "dim_product",
+      "source_table": "raw_products",
+      "target_table": "dim_product",
+      "sql_model_path": "dbt/models/dim_product.sql"
+    }
+  },
+  {
+    "task_id": "8",
+    "dependent_task_ids": ["5"],
+    "instruction": "Build the dim_store transformation by deriving distinct storefront values from the source data.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "model_name": "dim_store",
+      "source_tables": ["raw_products", "raw_purchases"],
+      "target_table": "dim_store",
+      "sql_model_path": "dbt/models/dim_store.sql"
+    }
+  },
+  {
+    "task_id": "9",
+    "dependent_task_ids": ["5"],
+    "instruction": "Build the dim_date transformation from raw_purchases.purchase_date, deriving date_key, year, month, day, and day_of_week.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "model_name": "dim_date",
+      "source_table": "raw_purchases",
+      "target_table": "dim_date",
+      "sql_model_path": "dbt/models/dim_date.sql"
+    }
+  },
+  {
+    "task_id": "10",
+    "dependent_task_ids": ["6", "7", "8", "9"],
+    "instruction": "Build the fact_purchases transformation at the transaction grain by joining raw_purchases to the conformed dimensions and loading purchase_id, customer_id, product_id, store_name, date_key, quantity, and revenue.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "model_name": "fact_purchases",
+      "source_table": "raw_purchases",
+      "dimension_tables": ["dim_customer", "dim_product", "dim_store", "dim_date"],
+      "target_table": "fact_purchases",
+      "sql_model_path": "dbt/models/fact_purchases.sql"
+    }
+  }
+]

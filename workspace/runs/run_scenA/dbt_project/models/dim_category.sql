@@ -1,0 +1,1 @@
+SELECT DISTINCT category FROM (SELECT "Category" AS category FROM staging_customer_details UNION SELECT "Category" AS category FROM staging_product_details) x WHERE category IS NOT NULL

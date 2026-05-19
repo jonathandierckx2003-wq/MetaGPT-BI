@@ -1,0 +1,108 @@
+\#\# Task
+\newline
+
+You are completing Phase 3 of your instructions as the BI QA Engineer. Both validation phases (Phases 1 and 2) are now complete. Based on the results collected below, produce a complete and structured Validation Feedback Report.
+\newline
+
+\#\# Validation results
+\newline
+
+\#\#\# Phase 1: Structural and technical validation results
+\newline
+
+\{structural\_validation\_results\}
+\newline
+
+\#\#\# Phase 2: Requirements traceability validation results
+\newline
+
+\{traceability\_validation\_results\}
+\newline
+
+\#\# Reference artifacts
+\newline
+
+\#\#\# BRD (Sections 4, 5 and 6 summary)
+\newline
+
+\{brd\_summary\}
+\newline
+
+\#\#\# Logical Schema
+\newline
+
+\{logical\_schema\}
+\newline
+
+\#\#\# DWH Technical Execution Plan
+\newline
+
+\{execution\_plan\}
+\newline
+
+\#\#\# DWH connection details (from Execution Report)
+\newline
+
+\{dwh\_connection\_details\}
+\newline
+
+\#\# Instructions
+\begin{itemize}
+    \item Determine the overall validation outcome: ACCEPTED if all checks in both phases pass, REJECTED otherwise.
+    \item Write the Validation Feedback Report strictly following the output format below.
+    \item For REJECTED outcomes: describe each failure with enough precision for the BI Analytics Engineer to identify the root cause and the specific task(s) to re-execute, without needing additional context.
+    \item For ACCEPTED outcomes: include the DWH connection details, inform the human user that the BI back-end development is complete and ready for use, and where (at which path) the BRD, Schemas and other artifacts created in the process can be retrieved.
+    \item Always use the same language as the original BRD.
+\end{itemize}
+
+\#\# Output format
+\newline
+
+\# Validation Feedback Report
+\newline
+
+\#\# Overall outcome
+\newline
+
+ACCEPTED / REJECTED
+\newline
+
+\#\# Phase 1: Structural and technical validation
+\newline
+
+For each table in the created DWH: table name \textbar\ check performed \textbar\ PASS/FAIL \textbar\ details
+\newline
+
+\#\# Phase 2: Requirements traceability validation
+\newline
+
+\#\#\# Queries and analyses (BRD Section 4)
+\newline
+
+For each query: query name \textbar\ SUPPORTED/UNSUPPORTED \textbar\ details
+\newline
+
+\#\#\# KPIs and metrics (BRD Section 5)
+\newline
+
+For each KPI: KPI name \textbar\ COMPUTABLE/NOT\_COMPUTABLE \textbar\ details
+\newline
+
+\#\#\# Data sources (BRD Section 6)
+\newline
+
+For each source: source name \textbar\ INGESTED/MISSING \textbar\ details
+\newline
+
+\#\# Summary and next steps
+\newline
+
+If ACCEPTED: confirmation that the DWH is validated, followed by DWH connection details.
+\newline
+
+If REJECTED: numbered list of all failures, each with:
+\begin{itemize}
+    \item The specific check or item that failed
+    \item What was found vs. what was expected
+    \item The task ID(s) from the Execution Plan that should be re-executed to fix it
+\end{itemize}

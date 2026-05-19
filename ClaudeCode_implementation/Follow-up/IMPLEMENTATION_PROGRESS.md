@@ -1117,3 +1117,304 @@ Live run transcripts moved from `workspace/archive/` (gitignored) to `ClaudeCode
 ```powershell
 Start-Transcript -Path "ClaudeCode_implementation\tests\transcripts\run_<scenario>_<dwh>_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
 ```
+
+### Session 9 continuation — Scenario A live run, third attempt (2026-05-09)
+
+**Run:** `run_A_duckdb_20260509_161356.txt` — Alice correctly called `generate_brd()` (DEV-64 fix confirmed), but pipeline stopped after Alice. No Bob/Eve/Alex/Edward artifacts.
+
+#### Bug fixed
+
+| DEV | Bug | Fix applied |
+|-----|-----|-------------|
+| DEV-67 | Pipeline stops after Alice even with DEV-64 fix: Bob's LLM calls `end` without `generate_data_model()` because Alice's final "I have finished the task" AIMessage (published to all agents' buffers) causes Bob to conclude the overall pipeline is done | Cross-agent confusion guard added to all four downstream agents' prompts |
+
+#### Files modified
+
+| File | Change |
+|------|--------|
+| `metagpt/prompts/bi/bi_data_modeler.py` | Cross-agent completion message warning added to Operating mode; MANDATORY block extended (DEV-67) |
+| `metagpt/prompts/bi/bi_solution_architect.py` | Same pattern (DEV-67) |
+| `metagpt/prompts/bi/bi_analytics_engineer.py` | Same pattern (DEV-67) |
+| `metagpt/prompts/bi/bi_qa_engineer.py` | Same pattern (DEV-67) |
+
+**Status:** DEV-67 prompt fix proved insufficient (4th run still stopped after Alice). Superseded by DEV-68 structural fix below.
+
+---
+
+### Session 9 continuation — Structural fix: BIBaseRole + Alice UX fix (2026-05-09)
+
+**Context:** Fourth Scenario A run still stopped after Alice despite DEV-67 prompt fix. Structural root cause confirmed: `observe_all_msg_from_buffer=True` adds ALL buffer messages (including Alice's RunCommand "finished" broadcast) to downstream agents' memory, where the LLM sees it and calls `end` prematurely.
+
+#### Bugs fixed
+
+| DEV | Bug | Fix applied |
+|-----|-----|-------------|
+| DEV-68 | Prompt-level DEV-67 fix insufficient — RunCommand "finished" messages from other agents enter downstream agent memory and confuse the LLM | Created `BIBaseRole(RoleZero)` with `_observe()` override that deletes newly-injected foreign RunCommand messages from memory after `super()._observe()` runs; all 5 BI roles now extend `BIBaseRole` |
+| DEV-69 | Alice asks 3–5 questions per turn; user must answer all in one terminal line | Added explicit "Ask at most 2 questions per message" rule to Phase 1 rules in `bi_requirements_analyst.py` prompt |
+
+#### Files modified
+
+| File | Change |
+|------|--------|
+| `metagpt/roles/bi/bi_base_role.py` | **New file** — `BIBaseRole(RoleZero)` with `_observe()` RunCommand filter (DEV-68) |
+| `metagpt/roles/bi/bi_requirements_analyst.py` | `class BIRequirementsAnalyst(BIBaseRole)` (DEV-68) |
+| `metagpt/roles/bi/bi_data_modeler.py` | `class BIDataModeler(BIBaseRole)` (DEV-68) |
+| `metagpt/roles/bi/bi_solution_architect.py` | `class BISolutionArchitect(BIBaseRole)` (DEV-68) |
+| `metagpt/roles/bi/bi_analytics_engineer.py` | `class BIAnalyticsEngineer(BIBaseRole)` (DEV-68) |
+| `metagpt/roles/bi/bi_qa_engineer.py` | `class BIQAEngineer(BIBaseRole)` (DEV-68) |
+| `metagpt/prompts/bi/bi_requirements_analyst.py` | 2-question-per-turn limit added to Phase 1 rules (DEV-69) |
+
+**Status:** DEV-68 confirmed working (5th run: all 5 agents fired). Pipeline crashed at Task 13 (fact_sales) — see DEV-70/71 below.
+
+---
+
+### Session 9 continuation — Scenario A live run `run_scenA` (2026-05-09, 18:42)
+
+**Context:** DEV-68 confirmed — Bob, Eve, Alex all ran after Alice. Pipeline crashed at Task 13 (fact_sales TRANSFORMATION) during Alex's 3rd SQL correction attempt due to JSON repair chain exhaustion. Also discovered workspace isolation broken (artifacts landed in `workspace/docs/` instead of `workspace/runs/run_scenA/docs/`).
+
+#### Bugs fixed
+
+| DEV | Bug | Fix applied |
+|-----|-----|-------------|
+| DEV-70a | Pipeline hard-crash when JSON repair chain exhausts all 3 attempts — uncaught `JSONDecodeError` at `role_zero_utils.py:123` terminates the whole pipeline | Wrapped final `json.loads()` in try/except returning a graceful retry-prompt instead of raising |
+| DEV-70b | Alex includes full SQL (with many `\"` escapes) in `execute_BI_task` task dict even though the dispatcher ignores it — long escaped strings are what trigger the repair chain failures | Added explicit instruction to omit `sql` from `execute_BI_task` tool_args for TRANSFORMATION tasks; only `model_name` and `db_path` needed |
+| DEV-71 | `Editor.working_dir` is hardcoded to `DEFAULT_WORKSPACE_ROOT` (`workspace/`) and never reads `config.workspace.path` — all artifacts landed in `workspace/docs/` regardless of `--run-name`; "Artifacts saved to:" section was always empty | In `bi_team.py`, after `team.hire([...])`, iterate over roles and set `role.editor.working_dir = run_dir` |
+
+#### Files modified
+
+| File | Change |
+|------|--------|
+| `metagpt/utils/role_zero_utils.py` | Final `json.loads()` in `parse_commands` wrapped in try/except — graceful error returned instead of crash (DEV-70a) |
+| `metagpt/prompts/bi/bi_analytics_engineer.py` | TRANSFORMATION step 2: instruct Alex to omit `sql` from `execute_BI_task` task dict (DEV-70b) |
+| `bi_team.py` | After `team.hire([...])`, set `role.editor.working_dir = run_dir` for all roles (DEV-71) |
+| `ClaudeCode_implementation/Follow-up/DEVIATIONS_AND_CLARIFICATIONS.md` | DEV-70, DEV-71 entries added |
+| `ClaudeCode_implementation/Follow-up/IMPLEMENTATION_PROGRESS.md` | This entry |
+
+**Status:** DEV-70 + DEV-71 confirmed working in run_scenA_2. Pipeline ran to completion (all 5 agents). See run_scenA_2 analysis below.
+
+---
+
+### Session 9 continuation — Scenario A `run_scenA_2` full pipeline analysis (2026-05-09, 20:14)
+
+**Run:** `run_scenA_2` — all 5 agents ran end-to-end. $1.234 total cost. Pipeline terminated after Edward's REJECTED report triggered Alex's correction loop, which hit a DuckDB file lock (same PID 64476 issue as before) and then the user accidentally typed their response into the wrong terminal, terminating the process.
+
+**Key findings:**
+- DEV-68 ✓: All 5 agents fired in sequence (Alice → Bob → Eve → Alex → Edward → Alex correction loop)
+- DEV-70 ✓: No JSON crash — Alex completed all 17 tasks without crashing
+- DEV-71 ✓: All docs artifacts landed in `workspace/runs/run_scenA_2/docs/`
+- Edward outcome: **REJECTED** — source data formatting issues (non-ISO timestamps in sales CSV, currency-formatted values in product CSV) prevented full DWH integrity validation
+- DWH location: `workspace/dwh.duckdb` (not yet isolated per run — DEV-71 only covered Editor-written files)
+- SVG/mmd files: went to `workspace/docs/` (mermaid rendering path still hardcoded — fixed as DEV-72)
+
+#### Bug fixed
+
+| DEV | Bug | Fix applied |
+|-----|-----|-------------|
+| DEV-72 | `_render_mermaid_schemas()` in BIDataModeler used hardcoded `workspace/docs/` path for SVG output, bypassing the per-run isolation set by DEV-71 | Changed to use `self.editor.working_dir / "docs"` so SVGs land in the correct run directory |
+
+#### Artifact consolidation for run_scenA_2 (manual, for thesis use)
+SVG/mmd files and DWH copied into `workspace/runs/run_scenA_2/` manually:
+- `workspace/runs/run_scenA_2/docs/conceptual_schema.svg` ✓
+- `workspace/runs/run_scenA_2/docs/conceptual_schema.mmd` ✓
+- `workspace/runs/run_scenA_2/docs/logical_schema.svg` ✓
+- `workspace/runs/run_scenA_2/docs/logical_schema.mmd` ✓
+- `workspace/runs/run_scenA_2/dwh.duckdb` ✓
+
+**Complete run_scenA_2 artifact inventory:**
+| Artifact | Path | Agent | Status |
+|----------|------|-------|--------|
+| Business Requirement Document | `docs/business_requirement_document.md` | Alice | ✓ |
+| Dimensional Model Specification | `docs/dimensional_model_specification.md` | Bob | ✓ |
+| Conceptual Schema (Mermaid) | `docs/conceptual_schema.mermaid` | Bob | ✓ |
+| Conceptual Schema (SVG) | `docs/conceptual_schema.svg` | Bob | ✓ (copied) |
+| Logical Schema (Mermaid) | `docs/logical_schema.mermaid` | Bob | ✓ |
+| Logical Schema (SVG) | `docs/logical_schema.svg` | Bob | ✓ (copied) |
+| Execution Plan | `docs/execution_plan.json` | Eve | ✓ |
+| Execution Report | `docs/execution_report.md` | Alex | ✓ (REJECTED by QA) |
+| Validation Feedback Report | `docs/validation_feedback_report.md` | Edward | ✓ (REJECTED) |
+| DWH Database | `dwh.duckdb` | Alex | ✓ (copied) |
+
+**Files modified:**
+- `metagpt/roles/bi/bi_data_modeler.py` — DEV-72: mermaid SVG output path uses `self.editor.working_dir`
+- `ClaudeCode_implementation/Follow-up/DEVIATIONS_AND_CLARIFICATIONS.md` — DEV-72 entry
+- `ClaudeCode_implementation/Follow-up/IMPLEMENTATION_PROGRESS.md` — this entry
+
+**Status:** Pipeline is functionally complete for thesis PoC analysis. The REJECTED outcome and correction loop DuckDB lock are legitimate findings. DEV-72 fix ensures future runs have complete artifact sets in the run directory.
+
+---
+
+### Session 9 continuation — DWH path isolation fix (2026-05-09)
+
+#### Bug fixed
+
+| DEV | Bug | Fix applied |
+|-----|-----|-------------|
+| DEV-73 | DWH always created at `workspace/dwh.duckdb` (global), not per-run — consecutive runs overwrote the same DWH file | Added `_resolve_db_path()` to `BIAnalyticsEngineer`; any workspace-relative `.duckdb` path is redirected at execution time to `config.workspace.path / <filename>` (the per-run directory set by DEV-71) |
+
+**Details:** Eve generates `"db_path": "workspace/dwh.duckdb"` in every execution plan task (she doesn't know the per-run directory at plan time). `_resolve_db_path()` is applied in `_run_duckdb()`, `_run_pandas()`, and `_run_dbt()` — the three dispatch methods that use `db_path`. Absolute paths pass through unchanged. Supabase/PostgreSQL scenarios are unaffected (they use `project_url`/`api_key`, not `db_path`).
+
+**Files modified:**
+- `metagpt/roles/bi/bi_analytics_engineer.py` — DEV-73: `_resolve_db_path()` added and applied in three dispatch methods
+- `ClaudeCode_implementation/Follow-up/DEVIATIONS_AND_CLARIFICATIONS.md` — DEV-73 entry
+- `ClaudeCode_implementation/Follow-up/IMPLEMENTATION_PROGRESS.md` — this entry
+
+---
+
+### Session 9 continuation — Performance fix + deviations audit (2026-05-09)
+
+#### Performance analysis: run_scenA_2 (run_A_test2_20h14.txt)
+
+| Agent | Duration | Notes |
+|-------|----------|-------|
+| Alice (BI Requirements Analyst) | ~6 min | Conversational elicitation + BRD writing |
+| Bob (BI Data Modeler) | ~8 sec | Pure LLM reasoning, no external tools |
+| Eve (BI Solution Architect) | ~12 sec | Pure LLM reasoning, no external tools |
+| Alex (BI Analytics Engineer) | ~44.5 min | **Main bottleneck** — 17 tasks, 55 JSON parse failures, 5 DuckDB lock errors |
+| Edward (BI QA Engineer) | ~15 sec | Pure LLM reasoning + memory retrieval |
+| **Total** | **~51.5 min** | |
+
+Alex bottlenecks identified:
+1. **55 JSON parsing failures** — Alex prepended natural language before the JSON command block on ~55 turns. Each failure = one wasted LLM call via the DEV-70 repair chain. Fixed by DEV-74 (mandatory JSON-first constraint in prompt).
+2. **5 DuckDB file lock errors** (PID 64476) — An external dbt subprocess held the DuckDB read-write lock. This blocked tasks 9, 15, 16 and caused cascading retries. Inherent concurrency issue; not fixed architecturally.
+3. **17 sequential tasks** — Inherent to the single-agent sequential execution architecture. Not addressable without parallelizing the task dispatch (out of scope for this PoC).
+
+#### Bug/prompt fixed
+
+| DEV | Bug | Fix applied |
+|-----|-----|-------------|
+| DEV-74 | 55 JSON parse failures per run (~5-10 min of wasted LLM calls): Alex prepended natural language before JSON command blocks | Added mandatory constraint #7 to Alex's general constraints: response MUST begin with `[` |
+
+#### Deviations logged (thesis audit)
+
+| DEV | Summary |
+|-----|---------|
+| DEV-74 | Alex prompt: JSON-first mandatory constraint (addresses 55 parsing failures observed in run_scenA_2) |
+| DEV-75 | Dynamic execution state injection (`CURRENT_STATE` / `cmd_prompt_current_state`) — custom `_think()` override not mentioned in thesis design |
+| DEV-76 | `BIBaseRole` as actual base class: thesis specifies direct `RoleZero` inheritance; implementation uses `RoleZero → BIBaseRole → {5 agents}` |
+
+**Files modified:**
+- `metagpt/prompts/bi/bi_analytics_engineer.py` — DEV-74: JSON-first mandatory constraint
+- `ClaudeCode_implementation/Follow-up/DEVIATIONS_AND_CLARIFICATIONS.md` — DEV-74, DEV-75, DEV-76 entries
+- `ClaudeCode_implementation/Follow-up/IMPLEMENTATION_PROGRESS.md` — this entry
+
+---
+
+### Session 9 continuation — Complete per-run workspace isolation: dbt project (DEV-77), 2026-05-09
+
+#### Bug fixed
+
+| DEV | Bug | Fix applied |
+|-----|-----|-------------|
+| DEV-77 | dbt project always created at `<repo_root>/dbt_projects/bi_dwh/` regardless of `--run-name`; SQL models and profiles from different runs overwrite each other | `DbtRunner.init_project()` now reads `_dbt_projects_dir` instance attribute (falling back to `DEFAULT_DBT_PROJECTS_DIR`); `bi_team.py` sets `_dbt_projects_dir = run_dir / "dbt_project"` on Alex's DbtRunner before the run — applies to all scenarios (DuckDB and Supabase) |
+
+**Complete per-run workspace isolation — all paths now isolated:**
+
+| Artifact | Path | Fixed by |
+|---|---|---|
+| Docs (BRD, schemas, plans, reports) | `workspace/runs/<run>/docs/` | DEV-71 |
+| DWH database | `workspace/runs/<run>/dwh.duckdb` | DEV-73 |
+| Mermaid SVG renders | `workspace/runs/<run>/docs/*.svg` | DEV-72 |
+| dbt project (SQL models, profile, compiled) | `workspace/runs/<run>/dbt_project/bi_dwh/` | **DEV-77** |
+
+**Files modified:**
+- `metagpt/tools/bi/dbt_runner.py` — DEV-77: `_dbt_projects_dir` instance override in `init_project()`
+- `bi_team.py` — DEV-77: set `_dbt_projects_dir` on Alex's DbtRunner in setup loop
+- `ClaudeCode_implementation/Follow-up/DEVIATIONS_AND_CLARIFICATIONS.md` — DEV-77 entry
+- `ClaudeCode_implementation/Follow-up/IMPLEMENTATION_PROGRESS.md` — this entry
+
+### Session 9 continuation — Scenario C (CSV → Supabase) practitioner evaluation pre-checks (2026-05-10)
+
+**Context:** Before the external BI practitioner evaluation of Scenario C, several issues were identified and fixed.
+
+#### CSV delimiter auto-detection fix
+
+**Problem:** `PandasLoader._read_file()` called `pd.read_csv(file_path)` which defaults to comma as separator. The practitioner's HR source files use semicolons. Any comma-based read would produce a single-column DataFrame (no column splitting) and silently load garbage data.
+
+**Fix:** Changed to `pd.read_csv(file_path, sep=None, engine="python")` — Python's CSV sniffer detects the delimiter automatically (comma, semicolon, tab, pipe, etc.), so no manual reconfiguration is needed per data source. Excel files are unaffected (separate branch).
+
+**Files changed:**
+- `metagpt/tools/bi/pandas_loader.py` — `sep=None, engine="python"` in `_read_file()`
+
+#### README corrections
+
+**Problem:** `README.md` stated the model as `gpt-5.4-mini` and estimated cost `$0.05–$0.20` per run. The actual model in `config/config2.yaml` is `gpt-5.4`, and the live Scenario A run (run_scenA_2) produced a verified total cost of ~$1.23 USD.
+
+**Fix:** Updated README to show `gpt-5.4` and `~$1.23 USD observed for full Scenario A run; budget $2–3/run`.
+
+**Files changed:**
+- `README.md` — corrected model name and cost estimate
+
+---
+
+### Session 9 continuation — DEV-78: Supabase credential field name mismatch (2026-05-10)
+
+**Context:** During the live Scenario C practitioner evaluation run (`workspace/runs/20260510_000555/`), Alex was blocked at task 9 (SCHEMA_CREATION on Supabase). The user had already provided credentials via `ask_human`, but Alex kept re-requesting them.
+
+| Bug | Root cause | Fix |
+|-----|-----------|-----|
+| DEV-78 | Eve generated `"connection_string"` field in `tool_args`; `_run_supabase()` only read `url`, `key`, `postgres_url`. Credentials were in `_credentials` dict from `ask_human`, but `_run_supabase()` didn't fall back to it. | `_run_supabase()` now reads from `_credentials` when `tool_args` lacks explicit fields; also accepts `connection_string` as alias for `postgres_url`. Eve's prompt now explicitly mandates the three separate field names. |
+
+**Files changed:**
+- `metagpt/roles/bi/bi_analytics_engineer.py` — `_run_supabase()`: credential fallback from `self._credentials` + `connection_string` alias for `postgres_url`
+- `metagpt/prompts/bi/bi_solution_architect.py` — Supabase credential section: explicit `url`, `key`, `postgres_url` fields required; "Never use a single `connection_string` field" added
+- `ClaudeCode_implementation/Follow-up/DEVIATIONS_AND_CLARIFICATIONS.md` — DEV-78 entry
+
+**Workaround for live run (applied manually):** User instructed Alex to call `execute_BI_task` for task 9 with the three separate fields using the credentials already collected. Code fix requires process restart to take effect on the running process.
+
+---
+
+### Session 9 continuation — DEV-79: dbt model path doubling (2026-05-10)
+
+**Context:** After the Supabase credential issue was resolved, Alex moved to TRANSFORMATION tasks (task 10 onward). Alex tried to use `Editor.edit_file_by_replace` on dbt model SQL files, which caused `FileNotFoundError` with the run-directory path segment appearing three times. Alex retried 5 times without success.
+
+| Bug | Root cause | Fix |
+|-----|-----------|-----|
+| DEV-79 | `write_model()` returned the absolute path of the SQL file (e.g., `C:\Users\jonat\MetaGPT-BI\workspace\runs\20260510_000555\dbt_project\bi_dwh\models\dim_date.sql`). The LLM stripped the repo-root prefix and passed the CWD-relative portion to `edit_file_by_replace`. The editor's `_try_fix_path()` then prepended `working_dir` (= run_dir absolute), doubling the run-dir segment. On retry, Alex used the doubled path from the error message, causing tripling. | `write_model()` and `write_schema()` now return a path **relative to `config.workspace.path`** (e.g., `dbt_project/bi_dwh/models/dim_date.sql`). The editor then correctly resolves it by prepending `working_dir` (= `config.workspace.path`). Prompt also adds explicit prohibition on using Editor for dbt SQL files. |
+
+**Impact check:**
+- No unit tests assert on the return value format of `write_model()` or `write_schema()` — tests only verify the method exists in the tool_execution_map (checked via grep over all test files).
+- `_relative_path()` falls back to `str(path.resolve())` (absolute) when `config.workspace.path` is not configured, so test-environment behavior is unchanged.
+- No other code reads the return value of `write_model()` or `write_schema()` programmatically — only the LLM uses the returned path string.
+
+**Files changed:**
+- `metagpt/tools/bi/dbt_runner.py` — `_relative_path()` helper; `write_model()` and `write_schema()` now return workspace-relative paths via `_relative_path()`
+- `metagpt/prompts/bi/bi_analytics_engineer.py` — TRANSFORMATION step 1 and step 3: explicit prohibition on using Editor for dbt SQL files; must use `DbtRunner.write_model()` only
+- `ClaudeCode_implementation/Follow-up/DEVIATIONS_AND_CLARIFICATIONS.md` — DEV-79 entry
+
+**Workaround for live run:** Instruct Alex directly: "Stop calling `edit_file_by_replace`. Call `DbtRunner.write_model('dim_date', sql)` with the SQL, then `BIAnalyticsEngineer.execute_BI_task(task_10_dict)`. Never use the Editor for dbt SQL files."
+
+
+### Session 9 continuation — DEV-80 through DEV-85: Scenario C post-mortem fixes (2026-05-10)
+
+**Context:** Full analysis of the Scenario C terminal transcript revealed five new issues beyond DEV-78 and DEV-79.
+
+| Bug | Root cause | Fix |
+|-----|-----------|-----|
+| DEV-80 | Alex called `end` after `publish_execution_report` failed → Edward never triggered, QA phase skipped | Error message now shows exact expected path; MANDATORY guard adds explicit retry-on-failure step |
+| DEV-81 | Eve used `*.csv` wildcard in all DATA_INGESTION file paths → 6 immediate failures → 6 manual `ask_human` interruptions | Alice's prompt now requires exact per-file filenames for every individual CSV/Excel source |
+| DEV-82 | `DataSourceInspector.inspect_csv()` hardcoded comma separator (same root cause as PandasLoader separator bug) | `inspect_csv()` now uses `sep=None, engine="python"` by default + accepts explicit `sep` parameter |
+| DEV-83 | SQL injection via f-string interpolation in `SupabaseConnector.verify_table()` and `list_tables()` | `_safe_identifier()` static method validates schema/table names against `^[a-zA-Z0-9_]+$` before interpolation |
+| DEV-84 | Eve and Edward MANDATORY guards lacked retry instruction for tool call failures | Both prompts now include "if the call returns an error, fix and retry — never call end until it succeeds" |
+| DEV-85 | Scenario C architectural gap: dbt ran against DuckDB (not Supabase) because `target_connection_string` in tool_args was ignored; all Supabase tables empty | `_run_dbt()` now auto-detects postgres target when `target_connection_string` present + no `db_path`; `_parse_postgres_url()` helper added; Eve's prompt adds critical CSV+Supabase tool-selection constraint; CONNECTION_SETUP now accepts full `postgres_url` |
+
+**Impact check — DEV-82:**
+- `DataSourceInspector.inspect_csv()` signature changed: new optional `sep` parameter added. Callers that pass positional args (none known — LLM always uses kwargs from tool schema) are unaffected. All existing call sites pass `file_path` as only positional arg.
+
+**Impact check — DEV-85:**
+- `_run_dbt()` TRANSFORMATION auto-profile logic: DuckDB path is unchanged when `db_path` is present (Scenario A). New postgres path only triggers when `target_connection_string` is present AND `db_path` is absent — this combination was previously a silent misconfiguration and had no working state to break.
+- `_parse_postgres_url()` is a new private static method — no callers outside `_run_dbt()`.
+- CONNECTION_SETUP postgres path: Individual host/port/user/password params still work (Scenario B/existing behavior). New `postgres_url` path is additive.
+
+**PandasLoader `sep` parameter (from pre-checks entry) — additional note:**
+The `sep` parameter was also added to `infer_schema()` and `get_row_count()` for consistency. All three methods now share the same `sep=None` auto-detect default and accept explicit override.
+
+**Files changed (DEV-80 to DEV-85):**
+- `metagpt/roles/bi/bi_analytics_engineer.py` — DEV-80: error message; DEV-85: `_parse_postgres_url()`, `_run_dbt()` postgres auto-profile + CONNECTION_SETUP postgres_url support
+- `metagpt/prompts/bi/bi_analytics_engineer.py` — DEV-80: MANDATORY guard retry-on-failure
+- `metagpt/prompts/bi/bi_requirements_analyst.py` — DEV-81: per-file exact filename requirement
+- `metagpt/tools/bi/data_source_inspector.py` — DEV-82: `inspect_csv()` sep parameter + auto-detect
+- `metagpt/tools/bi/supabase_connector.py` — DEV-83: `_safe_identifier()` + usage in `verify_table()` and `list_tables()`
+- `metagpt/prompts/bi/bi_solution_architect.py` — DEV-84: retry guidance; DEV-85: CSV+Supabase tool selection constraint
+- `metagpt/prompts/bi/bi_qa_engineer.py` — DEV-84: retry guidance
+- `ClaudeCode_implementation/Follow-up/DEVIATIONS_AND_CLARIFICATIONS.md` — DEV-80 through DEV-85 entries
+

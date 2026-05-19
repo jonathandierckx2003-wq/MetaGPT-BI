@@ -1,0 +1,1 @@
+SELECT DISTINCT CAST("Time stamp" AS TIMESTAMP) AS time_stamp, CAST(CAST("Time stamp" AS TIMESTAMP) AS DATE) AS date, STRFTIME(CAST("Time stamp" AS TIMESTAMP), '%Y-W%W') AS week FROM staging_e_commerce_sales_data WHERE "Time stamp" IS NOT NULL

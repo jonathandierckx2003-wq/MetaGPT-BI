@@ -166,6 +166,12 @@ examples/index_store.json
 .role_memory_data
 *~$*
 workspace/*
+!workspace/runs
+workspace/runs/**/*.duckdb
+!workspace/runs/run_scenA/dwh.duckdb
+!workspace/runs/BeyondData_test_run (scenario C)/dwh.duckdb
+workspace/runs/**/dbt_project/logs/
+workspace/runs/**/workspace/
 dbt_projects/
 tmp
 metagpt/roles/idea_agent.py
@@ -194,6 +200,7 @@ cov.xml
 .python-version
 tests/data/requirements/*.jpg
 *.csv
+!ClaudeCode_implementation/test_data/*.csv
 metagpt/ext/sela/results/*
 .chainlit/
 
@@ -203,5 +210,5 @@ metagpt/ext/aflow/scripts/optimized
 # Claude Code session history
 .cc-history/
 
-# Local config with credentials — never commit
-config/config2.yaml
+# Local config — credentials must be replaced with placeholders before committing
+# config/config2.yaml

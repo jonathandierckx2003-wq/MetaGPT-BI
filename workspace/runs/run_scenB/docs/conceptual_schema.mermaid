@@ -1,0 +1,42 @@
+erDiagram
+    DIM_CUSTOMER ||--o{ FACT_PURCHASES : makes
+    DIM_PRODUCT ||--o{ FACT_PURCHASES : includes
+    DIM_STORE ||--o{ FACT_PURCHASES : occurs_at
+    DIM_DATE ||--o{ FACT_PURCHASES : on
+
+    DIM_CUSTOMER {
+        string customer_id
+        string name
+        string email
+        string gender
+        integer age
+        string company
+        string customer_segment
+    }
+
+    DIM_PRODUCT {
+        string product_id
+        string name
+        string description
+        string store_name
+        decimal list_price
+    }
+
+    DIM_STORE {
+        string store_name
+    }
+
+    DIM_DATE {
+        integer date_key
+        date purchase_date
+        integer year
+        integer month
+        integer day
+        string day_of_week
+    }
+
+    FACT_PURCHASES {
+        string purchase_id
+        integer quantity
+        decimal revenue
+    }

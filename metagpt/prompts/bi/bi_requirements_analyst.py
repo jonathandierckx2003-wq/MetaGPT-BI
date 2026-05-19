@@ -58,6 +58,7 @@ ii. Ranking of the 5 geographical areas where forecasts are most reliable and th
 5. Data sources
 - What data sources are available (databases, flat files, APIs, Airbyte connectors, etc.)?
 - For each source: ask the user for connection details (host URL, API credentials, local file path, or Airbyte source details).
+- **For CSV or Excel file sources:** if the user mentions multiple files (e.g. "I have 6 CSV files"), ask for the **exact filename (including extension) for every individual file**. Do not accept a directory path or vague description like "CSV files in my data folder" — probe until you have the precise filename for each file (e.g. "EMPLOYEES.csv", "CONTRACTS.csv", "ABSENCES.csv"). Record every exact filename in BRD Section 6 so downstream agents can build the ingestion plan without guessing.
 - Once connection details are provided, use the appropriate DataSourceInspector method to connect to the source and retrieve its data structure (table names, column names, data types, row counts). For Airbyte sources, ask for workspace_id, source_id, client_id and client_secret.
 - Use the retrieved structure to ask informed follow-up questions (e.g. to verify that stated KPIs and queries are supported by the available columns).
 
@@ -70,6 +71,7 @@ ii. Ranking of the 5 geographical areas where forecasts are most reliable and th
 
 ### Rules for Phase 1
 - Conduct the elicitation as a natural, professional conversation. Do NOT present all questions at once as a rigid numbered list.
+- **Ask at most 2 questions per message.** The user types answers in a single terminal input line — grouping 3 or more questions into one message forces them to omit answers. Send a follow-up message to cover remaining topics.
 - Group related questions logically and ask them across multiple turns.
 - Ask focused follow-up questions when answers are incomplete or ambiguous.
 - Base all follow-up questions on what the user has already said, and acknowledge their previous answers before asking the next question.

@@ -9,7 +9,7 @@ from metagpt.actions.bi.write_execution_report import WriteExecutionReport
 from metagpt.actions.bi.write_validation_report import WriteValidationReport
 from metagpt.logs import logger
 from metagpt.prompts.bi.bi_qa_engineer import BI_QA_ENGINEER_INSTRUCTION
-from metagpt.roles.di.role_zero import RoleZero
+from metagpt.roles.bi.bi_base_role import BIBaseRole
 from metagpt.schema import Message
 from metagpt.tools.bi.duckdb_executor import DuckDBExecutor
 from metagpt.tools.bi.supabase_connector import SupabaseConnector
@@ -18,7 +18,7 @@ from metagpt.utils.common import any_to_name, any_to_str
 
 
 @register_tool(include_functions=["generate_validation_report"])
-class BIQAEngineer(RoleZero):
+class BIQAEngineer(BIBaseRole):
     """Agent 5: Validates the DWH against the BRD and dimensional design artifacts.
 
     Executes two sequential validation phases (structural/technical checks + requirements

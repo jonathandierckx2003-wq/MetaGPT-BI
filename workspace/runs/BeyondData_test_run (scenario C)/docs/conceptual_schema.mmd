@@ -1,0 +1,117 @@
+%%{init: {'theme': 'default', 'themeVariables': { 'fontFamily': 'Inter' }}}%%
+erDiagram
+    DIM_DATE ||--o{ FACT_MONTHLY_WORKFORCE_SNAPSHOT : "used by"
+    DIM_DATE ||--o{ FACT_MONTHLY_CONTRACT_MOVEMENT : "used by"
+    DIM_DATE ||--o{ FACT_MONTHLY_SALARY_COST : "used by"
+    DIM_DATE ||--o{ FACT_MONTHLY_ABSENCE : "used by"
+
+    DIM_PERSON ||--o{ FACT_MONTHLY_WORKFORCE_SNAPSHOT : "describes"
+    DIM_PERSON ||--o{ FACT_MONTHLY_CONTRACT_MOVEMENT : "describes"
+    DIM_PERSON ||--o{ FACT_MONTHLY_SALARY_COST : "describes"
+    DIM_PERSON ||--o{ FACT_MONTHLY_ABSENCE : "describes"
+    DIM_PERSON ||--o{ FACT_BRADFORD_INDEX : "describes"
+
+    DIM_CONTRACT ||--o{ FACT_MONTHLY_WORKFORCE_SNAPSHOT : "describes"
+    DIM_CONTRACT ||--o{ FACT_MONTHLY_CONTRACT_MOVEMENT : "describes"
+    DIM_CONTRACT ||--o{ FACT_MONTHLY_SALARY_COST : "describes"
+
+    DIM_AGE_BAND ||--o{ FACT_MONTHLY_WORKFORCE_SNAPSHOT : "classifies"
+    DIM_AGE_BAND ||--o{ FACT_MONTHLY_SALARY_COST : "classifies"
+    DIM_AGE_BAND ||--o{ FACT_MONTHLY_ABSENCE : "classifies"
+
+    DIM_SENIORITY ||--o{ FACT_MONTHLY_WORKFORCE_SNAPSHOT : "classifies"
+    DIM_SENIORITY ||--o{ FACT_MONTHLY_SALARY_COST : "classifies"
+
+    DIM_GENDER ||--o{ FACT_MONTHLY_WORKFORCE_SNAPSHOT : "classifies"
+    DIM_GENDER ||--o{ FACT_MONTHLY_SALARY_COST : "classifies"
+
+    DIM_REGION ||--o{ FACT_MONTHLY_WORKFORCE_SNAPSHOT : "classifies"
+    DIM_REGION ||--o{ FACT_MONTHLY_SALARY_COST : "classifies"
+    DIM_REGION ||--o{ FACT_MONTHLY_ABSENCE : "classifies"
+
+    DIM_DEPARTMENT ||--o{ FACT_MONTHLY_WORKFORCE_SNAPSHOT : "classifies"
+
+    DIM_CATEGORY ||--o{ FACT_MONTHLY_WORKFORCE_SNAPSHOT : "classifies"
+
+    DIM_POSTAL_CODE ||--o{ FACT_MONTHLY_WORKFORCE_SNAPSHOT : "classifies"
+    DIM_POSTAL_CODE ||--o{ FACT_MONTHLY_ABSENCE : "classifies"
+
+    DIM_ABSENCE_TYPE ||--o{ FACT_MONTHLY_ABSENCE : "classifies"
+    DIM_PERIOD ||--o{ FACT_MONTHLY_ABSENCE : "classifies"
+
+    FACT_MONTHLY_WORKFORCE_SNAPSHOT {
+        int headcount_flag
+    }
+
+    FACT_MONTHLY_CONTRACT_MOVEMENT {
+        int in_count
+        int out_count
+    }
+
+    FACT_MONTHLY_SALARY_COST {
+        decimal salary_cost
+    }
+
+    FACT_MONTHLY_ABSENCE {
+        decimal absence_days
+    }
+
+    FACT_BRADFORD_INDEX {
+        decimal bradford_index
+    }
+
+    DIM_DATE {
+        date month
+        string month_name
+        int year
+        string year_month_key
+    }
+
+    DIM_PERSON {
+        string individual_fdcp
+        string person_identifier
+        string person_name
+    }
+
+    DIM_CONTRACT {
+        string contract_identifier
+        date contract_start_date
+        date contract_end_date
+        string contract_status
+    }
+
+    DIM_AGE_BAND {
+        string age_band
+    }
+
+    DIM_SENIORITY {
+        string seniority
+    }
+
+    DIM_GENDER {
+        string gender
+    }
+
+    DIM_REGION {
+        string region
+    }
+
+    DIM_DEPARTMENT {
+        string department
+    }
+
+    DIM_CATEGORY {
+        string category
+    }
+
+    DIM_POSTAL_CODE {
+        string postal_code
+    }
+
+    DIM_ABSENCE_TYPE {
+        string absence_type
+    }
+
+    DIM_PERIOD {
+        string period
+    }

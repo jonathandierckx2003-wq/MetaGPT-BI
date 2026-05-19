@@ -141,6 +141,16 @@ async def main(user_requirement: str, n_round: int, run_name: str | None) -> Non
         BIQAEngineer(),
     ])
 
+    # DEV-71: Editor.working_dir defaults to the global DEFAULT_WORKSPACE_ROOT and is
+    # not updated when config.workspace.path changes. Point each agent's editor to the
+    # per-run directory so all artifacts land in workspace/runs/<run_name>/docs/.
+    # DEV-77: DbtRunner._dbt_projects_dir overrides DEFAULT_DBT_PROJECTS_DIR so that
+    # dbt models and profiles also land inside the per-run directory for all scenarios.
+    for role in team.env.roles.values():
+        role.editor.working_dir = run_dir
+        if isinstance(role, BIAnalyticsEngineer):
+            role._get_dbt_runner()._dbt_projects_dir = run_dir / "dbt_project"
+
     team.run_project(user_requirement)
     await team.run(n_round=n_round)
 

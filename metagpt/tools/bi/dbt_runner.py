@@ -73,7 +73,8 @@ class DbtRunner:
         Returns:
             Absolute path of the created project directory.
         """
-        parent = Path(project_dir) if project_dir else DEFAULT_DBT_PROJECTS_DIR
+        # DEV-77: use per-run override when bi_team.py sets _dbt_projects_dir on this instance
+        parent = Path(project_dir) if project_dir else getattr(self, "_dbt_projects_dir", DEFAULT_DBT_PROJECTS_DIR)
         parent.mkdir(parents=True, exist_ok=True)
 
         target = parent / project_name
@@ -180,6 +181,21 @@ class DbtRunner:
         profiles_path.write_text(profile_content, encoding="utf-8")
         return str(profiles_path)
 
+    def _relative_path(self, path: Path) -> str:
+        """Return path relative to config.workspace.path (= editor working_dir), or absolute.
+
+        DEV-79: write_model() used to return absolute paths. The LLM would strip the
+        repo-root prefix and pass the remainder as a relative path to edit_file_by_replace.
+        The editor then prepended working_dir (= workspace.path), doubling the run-dir
+        segment. Returning workspace-relative paths makes LLM-passed paths correct.
+        """
+        try:
+            from metagpt.config2 import config
+            workspace = Path(config.workspace.path).resolve()
+            return str(path.resolve().relative_to(workspace))
+        except (ValueError, ImportError, AttributeError):
+            return str(path.resolve())
+
     def write_model(self, model_name: str, sql: str) -> str:
         """Write a SQL transformation model file to the project's models directory.
 
@@ -190,7 +206,7 @@ class DbtRunner:
             sql: SQL SELECT statement that defines the transformation.
 
         Returns:
-            Path of the written .sql file.
+            Path of the written .sql file, relative to config.workspace.path.
         """
         # DEV-44: auto-init default project so write_model works before execute_BI_task
         if self._project_dir is None:
@@ -200,7 +216,7 @@ class DbtRunner:
         models_dir.mkdir(exist_ok=True)
         model_path = models_dir / f"{model_name}.sql"
         model_path.write_text(sql, encoding="utf-8")
-        return str(model_path)
+        return self._relative_path(model_path)
 
     def write_schema(self, schema_name: str, yaml_content: str) -> str:
         """Write a schema.yml (or sources.yml) file to the models directory.
@@ -212,14 +228,14 @@ class DbtRunner:
             yaml_content: Full YAML content of the schema file.
 
         Returns:
-            Path of the written .yml file.
+            Path of the written .yml file, relative to config.workspace.path.
         """
         project_dir = self._require_project()
         models_dir = project_dir / "models"
         models_dir.mkdir(exist_ok=True)
         schema_path = models_dir / f"{schema_name}.yml"
         schema_path.write_text(yaml_content, encoding="utf-8")
-        return str(schema_path)
+        return self._relative_path(schema_path)
 
     def compile_model(self, model_name: str) -> dict[str, Any]:
         """Compile a specific dbt model (syntax check, Jinja rendering) without running it.

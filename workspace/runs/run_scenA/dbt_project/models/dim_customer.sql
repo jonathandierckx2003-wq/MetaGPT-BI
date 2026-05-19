@@ -1,0 +1,20 @@
+SELECT DISTINCT
+    "Customer ID" AS customer_id,
+    CAST("Age" AS INTEGER) AS age,
+    "Gender" AS gender,
+    "Item Purchased" AS item_purchased,
+    "Category" AS category,
+    CAST("Purchase Amount (USD)" AS DOUBLE) AS purchase_amount_usd,
+    "Location" AS location,
+    "Size" AS size,
+    "Color" AS color,
+    "Season" AS season,
+    CAST("Review Rating" AS DOUBLE) AS review_rating,
+    "Subscription Status" AS subscription_status,
+    "Shipping Type" AS shipping_type,
+    "Discount Applied" AS discount_applied,
+    "Promo Code Used" AS promo_code_used,
+    CAST("Previous Purchases" AS INTEGER) AS previous_purchases,
+    "Payment Method" AS payment_method,
+    "Frequency of Purchases" AS frequency_of_purchases
+FROM stg_customer_details

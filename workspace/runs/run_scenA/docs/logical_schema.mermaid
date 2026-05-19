@@ -1,0 +1,100 @@
+erDiagram
+    DIM_CUSTOMER ||--o{ FACT_COMMERCE_INTERACTION : customer_key
+    DIM_PRODUCT ||--o{ FACT_COMMERCE_INTERACTION : product_key
+    DIM_SEASON ||--o{ FACT_COMMERCE_INTERACTION : season_key
+    DIM_DATE ||--o{ FACT_COMMERCE_INTERACTION : date_key
+    DIM_PROMO_CODE ||--o{ FACT_COMMERCE_INTERACTION : promo_code_key
+    DIM_REVIEW ||--o{ FACT_COMMERCE_INTERACTION : review_key
+    DIM_SUBSCRIPTION_STATUS ||--o{ DIM_CUSTOMER : subscription_status_key
+    DIM_GEOGRAPHY ||--o{ DIM_CUSTOMER : geography_key
+    DIM_AGE_GROUP ||--o{ DIM_CUSTOMER : age_group_key
+    DIM_PURCHASE_FREQUENCY_SEGMENT ||--o{ DIM_CUSTOMER : purchase_frequency_segment_key
+    DIM_GEOGRAPHY ||--o{ FACT_CUSTOMER_SEGMENTATION : geography_key
+    DIM_AGE_GROUP ||--o{ FACT_CUSTOMER_SEGMENTATION : age_group_key
+    DIM_PURCHASE_FREQUENCY_SEGMENT ||--o{ FACT_CUSTOMER_SEGMENTATION : purchase_frequency_segment_key
+    DIM_CUSTOMER ||--o{ FACT_CUSTOMER_SEGMENTATION : customer_key
+
+    DIM_CUSTOMER {
+        integer customer_key PK
+        string customer_id
+        string customer_name
+        string subscription_status
+        string us_state
+        string age_group
+        string purchase_frequency_segment
+    }
+
+    DIM_PRODUCT {
+        integer product_key PK
+        string product_id
+        string product_name
+        string product_category
+    }
+
+    DIM_SEASON {
+        integer season_key PK
+        string season
+    }
+
+    DIM_DATE {
+        integer date_key PK
+        date full_date
+        integer week_number
+        integer year
+    }
+
+    DIM_PROMO_CODE {
+        integer promo_code_key PK
+        string promo_code
+    }
+
+    DIM_SUBSCRIPTION_STATUS {
+        integer subscription_status_key PK
+        string subscription_status
+    }
+
+    DIM_GEOGRAPHY {
+        integer geography_key PK
+        string us_state
+    }
+
+    DIM_AGE_GROUP {
+        integer age_group_key PK
+        string age_group
+    }
+
+    DIM_PURCHASE_FREQUENCY_SEGMENT {
+        integer purchase_frequency_segment_key PK
+        string purchase_frequency_segment
+    }
+
+    DIM_REVIEW {
+        integer review_key PK
+        decimal review_rating
+    }
+
+    FACT_COMMERCE_INTERACTION {
+        integer commerce_interaction_key PK
+        integer customer_key FK
+        integer product_key FK
+        integer season_key FK
+        integer date_key FK
+        integer promo_code_key FK
+        integer review_key FK
+        decimal revenue
+        decimal order_value
+        decimal discount_rate
+        decimal promo_code_redemption_rate
+        integer purchase_count
+        integer view_count
+        integer conversion_count
+    }
+
+    FACT_CUSTOMER_SEGMENTATION {
+        integer customer_segmentation_key PK
+        integer customer_key FK
+        integer geography_key FK
+        integer age_group_key FK
+        integer purchase_frequency_segment_key FK
+        integer customer_count
+    }

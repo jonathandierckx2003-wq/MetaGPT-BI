@@ -1,0 +1,154 @@
+erDiagram
+    dim_date ||--o{ fact_monthly_workforce_snapshot : "date_key"
+    dim_date ||--o{ fact_monthly_contract_movement : "date_key"
+    dim_date ||--o{ fact_monthly_salary_cost : "date_key"
+    dim_date ||--o{ fact_monthly_absence : "date_key"
+
+    dim_person ||--o{ fact_monthly_workforce_snapshot : "person_key"
+    dim_person ||--o{ fact_monthly_contract_movement : "person_key"
+    dim_person ||--o{ fact_monthly_salary_cost : "person_key"
+    dim_person ||--o{ fact_monthly_absence : "person_key"
+    dim_person ||--o{ fact_bradford_index : "person_key"
+
+    dim_contract ||--o{ fact_monthly_workforce_snapshot : "contract_key"
+    dim_contract ||--o{ fact_monthly_contract_movement : "contract_key"
+    dim_contract ||--o{ fact_monthly_salary_cost : "contract_key"
+
+    dim_age_band ||--o{ fact_monthly_workforce_snapshot : "age_band_key"
+    dim_age_band ||--o{ fact_monthly_salary_cost : "age_band_key"
+    dim_age_band ||--o{ fact_monthly_absence : "age_band_key"
+
+    dim_seniority ||--o{ fact_monthly_workforce_snapshot : "seniority_key"
+    dim_seniority ||--o{ fact_monthly_salary_cost : "seniority_key"
+
+    dim_gender ||--o{ fact_monthly_workforce_snapshot : "gender_key"
+    dim_gender ||--o{ fact_monthly_salary_cost : "gender_key"
+
+    dim_region ||--o{ fact_monthly_workforce_snapshot : "region_key"
+    dim_region ||--o{ fact_monthly_salary_cost : "region_key"
+    dim_region ||--o{ fact_monthly_absence : "region_key"
+
+    dim_department ||--o{ fact_monthly_workforce_snapshot : "department_key"
+    dim_category ||--o{ fact_monthly_workforce_snapshot : "category_key"
+    dim_postal_code ||--o{ fact_monthly_workforce_snapshot : "postal_code_key"
+    dim_postal_code ||--o{ fact_monthly_absence : "postal_code_key"
+
+    dim_absence_type ||--o{ fact_monthly_absence : "absence_type_key"
+    dim_period ||--o{ fact_monthly_absence : "period_key"
+
+    dim_date {
+        int date_key PK
+        date month
+        string month_name
+        int year
+        string year_month_key
+    }
+
+    dim_person {
+        int person_key PK
+        string individual_fdcp
+        string person_identifier
+        string person_name
+    }
+
+    dim_contract {
+        int contract_key PK
+        string contract_identifier
+        date contract_start_date
+        date contract_end_date
+        string contract_status
+    }
+
+    dim_age_band {
+        int age_band_key PK
+        string age_band
+    }
+
+    dim_seniority {
+        int seniority_key PK
+        string seniority
+    }
+
+    dim_gender {
+        int gender_key PK
+        string gender
+    }
+
+    dim_region {
+        int region_key PK
+        string region
+    }
+
+    dim_department {
+        int department_key PK
+        string department
+    }
+
+    dim_category {
+        int category_key PK
+        string category
+    }
+
+    dim_postal_code {
+        int postal_code_key PK
+        string postal_code
+    }
+
+    dim_absence_type {
+        int absence_type_key PK
+        string absence_type
+    }
+
+    dim_period {
+        int period_key PK
+        string period
+    }
+
+    fact_monthly_workforce_snapshot {
+        int date_key FK
+        int person_key FK
+        int contract_key FK
+        int age_band_key FK
+        int seniority_key FK
+        int gender_key FK
+        int region_key FK
+        int department_key FK
+        int category_key FK
+        int postal_code_key FK
+        int headcount_flag
+    }
+
+    fact_monthly_contract_movement {
+        int date_key FK
+        int person_key FK
+        int contract_key FK
+        int in_count
+        int out_count
+    }
+
+    fact_monthly_salary_cost {
+        int date_key FK
+        int person_key FK
+        int contract_key FK
+        int age_band_key FK
+        int seniority_key FK
+        int gender_key FK
+        int region_key FK
+        decimal salary_cost
+    }
+
+    fact_monthly_absence {
+        int date_key FK
+        int person_key FK
+        int age_band_key FK
+        int region_key FK
+        int postal_code_key FK
+        int absence_type_key FK
+        int period_key FK
+        decimal absence_days
+    }
+
+    fact_bradford_index {
+        int person_key FK
+        decimal bradford_index
+    }

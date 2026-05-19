@@ -1,0 +1,47 @@
+%%{init: {'theme': 'default', 'themeVariables': { 'fontFamily': 'Inter' }}}%%
+erDiagram
+    DIM_CUSTOMER ||--o{ FACT_PURCHASES : customer_id
+    DIM_PRODUCT ||--o{ FACT_PURCHASES : product_id
+    DIM_STORE ||--o{ FACT_PURCHASES : store_name
+    DIM_DATE ||--o{ FACT_PURCHASES : date_key
+
+    DIM_CUSTOMER {
+        string customer_id PK
+        string name
+        string email
+        string gender
+        integer age
+        string company
+        string customer_segment
+    }
+
+    DIM_PRODUCT {
+        string product_id PK
+        string name
+        string description
+        string store_name FK
+        decimal list_price
+    }
+
+    DIM_STORE {
+        string store_name PK
+    }
+
+    DIM_DATE {
+        integer date_key PK
+        date purchase_date
+        integer year
+        integer month
+        integer day
+        string day_of_week
+    }
+
+    FACT_PURCHASES {
+        string purchase_id PK
+        string customer_id FK
+        string product_id FK
+        string store_name FK
+        integer date_key FK
+        integer quantity
+        decimal revenue
+    }

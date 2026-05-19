@@ -1,0 +1,207 @@
+[
+  {
+    "task_id": "1",
+    "dependent_task_ids": [],
+    "instruction": "Initialize the DuckDB database file for the NovaMart data warehouse at the workspace path.",
+    "task_type": "INSTANTIATION",
+    "tool": "DuckDBExecutor",
+    "tool_args": {
+      "db_path": "workspace/dwh.duckdb"
+    }
+  },
+  {
+    "task_id": "2",
+    "dependent_task_ids": ["1"],
+    "instruction": "Create the staging tables in DuckDB for the three source CSV files: customer_details, e_commerce_sales_data, and product_details.",
+    "task_type": "SCHEMA_CREATION",
+    "tool": "DuckDBExecutor",
+    "tool_args": {
+      "db_path": "workspace/dwh.duckdb",
+      "ddl": [
+        "CREATE TABLE IF NOT EXISTS stg_customer_details AS SELECT * FROM read_csv_auto('workspace/data/customer_details.csv') LIMIT 0;",
+        "CREATE TABLE IF NOT EXISTS stg_e_commerce_sales_data AS SELECT * FROM read_csv_auto('workspace/data/E-commerce_sales_data.csv') LIMIT 0;",
+        "CREATE TABLE IF NOT EXISTS stg_product_details AS SELECT * FROM read_csv_auto('workspace/data/product_details.csv') LIMIT 0;"
+      ]
+    }
+  },
+  {
+    "task_id": "3",
+    "dependent_task_ids": ["2"],
+    "instruction": "Load the customer details CSV into the DuckDB staging table.",
+    "task_type": "DATA_INGESTION",
+    "tool": "PandasLoader",
+    "tool_args": {
+      "file_path": "workspace/data/customer_details.csv",
+      "target_table": "stg_customer_details",
+      "db_path": "workspace/dwh.duckdb"
+    }
+  },
+  {
+    "task_id": "4",
+    "dependent_task_ids": ["2"],
+    "instruction": "Load the e-commerce sales data CSV into the DuckDB staging table.",
+    "task_type": "DATA_INGESTION",
+    "tool": "PandasLoader",
+    "tool_args": {
+      "file_path": "workspace/data/E-commerce_sales_data.csv",
+      "target_table": "stg_e_commerce_sales_data",
+      "db_path": "workspace/dwh.duckdb"
+    }
+  },
+  {
+    "task_id": "5",
+    "dependent_task_ids": ["2"],
+    "instruction": "Load the product details CSV into the DuckDB staging table.",
+    "task_type": "DATA_INGESTION",
+    "tool": "PandasLoader",
+    "tool_args": {
+      "file_path": "workspace/data/product_details.csv",
+      "target_table": "stg_product_details",
+      "db_path": "workspace/dwh.duckdb"
+    }
+  },
+  {
+    "task_id": "6",
+    "dependent_task_ids": ["3", "4", "5"],
+    "instruction": "Build the DIM_CUSTOMER dimensional table from the staged customer details data, including customer attributes needed for subscription status, geography, age group, and purchase frequency segmentation where available.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "db_path": "workspace/dwh.duckdb",
+      "model_name": "dim_customer",
+      "sql": "SELECT DISTINCT customer_id, customer_name, subscription_status, us_state, age_group, purchase_frequency_segment FROM stg_customer_details"
+    }
+  },
+  {
+    "task_id": "7",
+    "dependent_task_ids": ["3", "4", "5"],
+    "instruction": "Build the DIM_PRODUCT dimensional table from the staged product details data, including product category and product attributes needed for category analysis.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "db_path": "workspace/dwh.duckdb",
+      "model_name": "dim_product",
+      "sql": "SELECT DISTINCT product_id, product_name, product_category FROM stg_product_details"
+    }
+  },
+  {
+    "task_id": "8",
+    "dependent_task_ids": ["3", "4", "5"],
+    "instruction": "Build the DIM_SEASON dimensional table to support seasonal analysis, using season values derived from source data where available.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "db_path": "workspace/dwh.duckdb",
+      "model_name": "dim_season",
+      "sql": "SELECT DISTINCT season FROM stg_product_details WHERE season IS NOT NULL"
+    }
+  },
+  {
+    "task_id": "9",
+    "dependent_task_ids": ["3", "4", "5"],
+    "instruction": "Build the DIM_DATE dimensional table to support weekly and seasonal analysis from any available date field in the sales data.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "db_path": "workspace/dwh.duckdb",
+      "model_name": "dim_date",
+      "sql": "SELECT DISTINCT CAST(order_date AS DATE) AS full_date, EXTRACT(WEEK FROM CAST(order_date AS DATE)) AS week_number, EXTRACT(YEAR FROM CAST(order_date AS DATE)) AS year FROM stg_e_commerce_sales_data WHERE order_date IS NOT NULL"
+    }
+  },
+  {
+    "task_id": "10",
+    "dependent_task_ids": ["3", "4", "5"],
+    "instruction": "Build the DIM_PROMO_CODE dimensional table from promo code values present in the sales data.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "db_path": "workspace/dwh.duckdb",
+      "model_name": "dim_promo_code",
+      "sql": "SELECT DISTINCT promo_code FROM stg_e_commerce_sales_data WHERE promo_code IS NOT NULL"
+    }
+  },
+  {
+    "task_id": "11",
+    "dependent_task_ids": ["3", "4", "5"],
+    "instruction": "Build the DIM_SUBSCRIPTION_STATUS dimensional table from customer subscription status values.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "db_path": "workspace/dwh.duckdb",
+      "model_name": "dim_subscription_status",
+      "sql": "SELECT DISTINCT subscription_status FROM stg_customer_details WHERE subscription_status IS NOT NULL"
+    }
+  },
+  {
+    "task_id": "12",
+    "dependent_task_ids": ["3", "4", "5"],
+    "instruction": "Build the DIM_GEOGRAPHY dimensional table from customer state values.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "db_path": "workspace/dwh.duckdb",
+      "model_name": "dim_geography",
+      "sql": "SELECT DISTINCT us_state FROM stg_customer_details WHERE us_state IS NOT NULL"
+    }
+  },
+  {
+    "task_id": "13",
+    "dependent_task_ids": ["3", "4", "5"],
+    "instruction": "Build the DIM_AGE_GROUP dimensional table from customer age group values.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "db_path": "workspace/dwh.duckdb",
+      "model_name": "dim_age_group",
+      "sql": "SELECT DISTINCT age_group FROM stg_customer_details WHERE age_group IS NOT NULL"
+    }
+  },
+  {
+    "task_id": "14",
+    "dependent_task_ids": ["3", "4", "5"],
+    "instruction": "Build the DIM_PURCHASE_FREQUENCY_SEGMENT dimensional table from customer purchase frequency segment values.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "db_path": "workspace/dwh.duckdb",
+      "model_name": "dim_purchase_frequency_segment",
+      "sql": "SELECT DISTINCT purchase_frequency_segment FROM stg_customer_details WHERE purchase_frequency_segment IS NOT NULL"
+    }
+  },
+  {
+    "task_id": "15",
+    "dependent_task_ids": ["3", "4", "5"],
+    "instruction": "Build the DIM_REVIEW dimensional table from review rating values present in the sales data, if available.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "db_path": "workspace/dwh.duckdb",
+      "model_name": "dim_review",
+      "sql": "SELECT DISTINCT review_rating FROM stg_e_commerce_sales_data WHERE review_rating IS NOT NULL"
+    }
+  },
+  {
+    "task_id": "16",
+    "dependent_task_ids": ["6", "7", "8", "9", "10", "11", "12", "13", "14", "15"],
+    "instruction": "Build the FACT_COMMERCE_INTERACTION table by joining staged sales data to customer, product, season, date, promo code, and review dimensions to support revenue, order value, discount, promo, conversion, and review analysis.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "db_path": "workspace/dwh.duckdb",
+      "model_name": "fact_commerce_interaction",
+      "sql": "SELECT s.*, c.customer_id, p.product_id, se.season, d.full_date, pc.promo_code, r.review_rating FROM stg_e_commerce_sales_data s LEFT JOIN dim_customer c ON s.customer_id = c.customer_id LEFT JOIN dim_product p ON s.product_id = p.product_id LEFT JOIN dim_season se ON s.season = se.season LEFT JOIN dim_date d ON CAST(s.order_date AS DATE) = d.full_date LEFT JOIN dim_promo_code pc ON s.promo_code = pc.promo_code LEFT JOIN dim_review r ON s.review_rating = r.review_rating"
+    }
+  },
+  {
+    "task_id": "17",
+    "dependent_task_ids": ["6", "12", "13", "14"],
+    "instruction": "Build the FACT_CUSTOMER_SEGMENTATION table to support customer distribution analysis by US state, age group, and purchase frequency segment.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "db_path": "workspace/dwh.duckdb",
+      "model_name": "fact_customer_segmentation",
+      "sql": "SELECT customer_id, us_state, age_group, purchase_frequency_segment, COUNT(*) AS customer_count FROM stg_customer_details GROUP BY customer_id, us_state, age_group, purchase_frequency_segment"
+    }
+  }
+]

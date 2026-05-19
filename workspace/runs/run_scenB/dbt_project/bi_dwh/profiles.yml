@@ -1,0 +1,11 @@
+bi_dwh:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: aws-0-eu-west-1.pooler.supabase.com
+      port: 5432
+      user: postgres.rwbgskyxnxvokxylxgke
+      password: MetaGPT-BI123
+      dbname: postgres
+      schema: public

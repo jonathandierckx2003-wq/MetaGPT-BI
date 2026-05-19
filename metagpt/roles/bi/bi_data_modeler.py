@@ -5,7 +5,7 @@ from metagpt.actions.bi.write_data_model import WriteDataModel
 from metagpt.config2 import Config
 from metagpt.logs import logger
 from metagpt.prompts.bi.bi_data_modeler import BI_DATA_MODELER_INSTRUCTION
-from metagpt.roles.di.role_zero import RoleZero
+from metagpt.roles.bi.bi_base_role import BIBaseRole
 from metagpt.schema import Message
 from metagpt.tools.tool_registry import register_tool
 from metagpt.utils.common import any_to_name, any_to_str
@@ -13,7 +13,7 @@ from metagpt.utils.mermaid import mermaid_to_file
 
 
 @register_tool(include_functions=["generate_data_model"])
-class BIDataModeler(RoleZero):
+class BIDataModeler(BIBaseRole):
     """Agent 2: Translates the BRD into a complete dimensional design for the DWH.
 
     Executes four sequential reasoning steps (analyze BRD → choose schema type →
@@ -74,22 +74,25 @@ class BIDataModeler(RoleZero):
         if config.mermaid.engine == "none":
             return
         try:
-            # workspace/docs/ is where Editor writes files (DEV-27); pass path without suffix.
+            # DEV-72: use editor.working_dir so SVGs land in the per-run directory
+            # (set by bi_team.py after DEV-71). Falls back to workspace/docs/ when
+            # editor.working_dir is still DEFAULT_WORKSPACE_ROOT (single-agent tests).
+            docs_dir = str(self.editor.working_dir / "docs")
             await mermaid_to_file(
                 engine=config.mermaid.engine,
                 mermaid_code=conceptual_code,
-                output_file_without_suffix="workspace/docs/conceptual_schema",
+                output_file_without_suffix=f"{docs_dir}/conceptual_schema",
                 suffixes=["svg"],
                 config=config,
             )
             await mermaid_to_file(
                 engine=config.mermaid.engine,
                 mermaid_code=logical_code,
-                output_file_without_suffix="workspace/docs/logical_schema",
+                output_file_without_suffix=f"{docs_dir}/logical_schema",
                 suffixes=["svg"],
                 config=config,
             )
-            logger.info("Mermaid schemas rendered to SVG in workspace/docs/")
+            logger.info(f"Mermaid schemas rendered to SVG in {docs_dir}")
         except Exception as exc:
             logger.warning(
                 f"Mermaid rendering skipped ({config.mermaid.engine} engine unavailable or failed): {exc}. "

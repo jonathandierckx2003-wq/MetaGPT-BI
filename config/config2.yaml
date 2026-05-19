@@ -1,0 +1,22 @@
+# Full Example: https://github.com/geekan/MetaGPT/blob/main/config/config2.example.yaml
+# Reflected Code: https://github.com/geekan/MetaGPT/blob/main/metagpt/config2.py
+
+# Cerebras (llama3.1-70b) — replace api_key with your own
+#llm:
+#  api_type: 'openai'
+#  base_url: 'https://api.cerebras.ai/v1'
+#  api_key: 'YOUR_CEREBRAS_API_KEY'
+#  model: 'llama3.1-70b'
+
+# Groq (llama-3.3-70b-versatile) — replace api_key with your own
+#llm:
+#  api_type: 'openai'
+#  base_url: 'https://api.groq.com/openai/v1'
+#  api_key: 'YOUR_GROQ_API_KEY'
+#  model: 'llama-3.3-70b-versatile'
+
+# Active configuration — replace api_key with your own
+llm:
+  api_type: 'openai'
+  api_key: 'YOUR_OPENAI_API_KEY'
+  model: 'gpt-5.4-mini'

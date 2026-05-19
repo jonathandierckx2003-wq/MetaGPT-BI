@@ -1922,3 +1922,515 @@ Start-Transcript -Path "ClaudeCode_implementation\tests\transcripts\run_A_duckdb
 
 **Note on transcript content:** Transcripts include the machine name (`LAPTOP-JONATHAN`) and Windows username (`jonat`). This is normal PowerShell transcript behaviour and is acceptable for a thesis project. Redact or note this if publishing to GitHub.
 
+---
+
+## Session 9 continuation — Scenario A live run, third attempt (2026-05-09)
+
+### DEV-67 — Pipeline stops after Alice even after DEV-64 fix: downstream agents call `end` prematurely due to cross-agent completion message confusion
+
+**Observed during:** Scenario A live run, 2026-05-09 (third run, transcript `run_A_duckdb_20260509_161356.txt`).
+
+**Symptom:**
+Alice correctly called `BIRequirementsAnalyst.generate_brd()` (DEV-64 fix confirmed working — BRD saved to `workspace/docs/business_requirement_document.md`). The pipeline still stopped after Alice. No artifacts from Bob, Eve, Alex, or Edward were produced. LLM cost summary: 84,560 prompt tokens, 5,457 completion tokens, $0.0880 — consistent with Alice running alone (no additional LLM calls from Bob's dimensional modeling).
+
+**Root cause:**
+After Alice calls `end`, RoleZero's `_end()` method publishes a final AIMessage to ALL agents' shared buffers. The message content is: `"I have finished the task, please mark my task as finished. Outputs: <Alice's BRD summary>"`. This message is routed to every agent because the default `send_to` is `MESSAGE_ROUTE_TO_ALL`.
+
+In round 2 of the `Team.run()` loop, Bob (BIDataModeler) observes both the WriteBRD message (his activation trigger) and Alice's final "I have finished the task" AIMessage. `observe_all_msg_from_buffer=True` (RoleZero default) adds both to Bob's memory regardless of his `_watch` filter. When Bob's LLM builds its reasoning context, it sees Alice's completion message and interprets it as a signal that the overall pipeline is done — causing it to call `end` without calling `generate_data_model()`.
+
+Evidence:
+1. `workspace/storage/` is empty → no exception was raised (the `serialize_decorator` was not triggered).
+2. Only the BRD artifact exists → Bob ran but produced no output (no WriteDataModel message).
+3. 5,457 completion tokens total → consistent with Alice only; Bob's `WriteDataModel` LLM call would add ~2,000+ completion tokens.
+4. Bob already had a MANDATORY block in his prompt (`**MANDATORY: You MUST call BIDataModeler.generate_data_model() before calling end.**`) but this was insufficient to override the LLM's inference from Alice's "finished" message.
+
+The same confusion can affect all other downstream agents (Eve, Alex, Edward) when their predecessors publish their completion messages.
+
+**Fix:**
+Added two layers of protection to all four downstream agent prompts:
+
+1. **Cross-agent context warning paragraph** added immediately after the "Operating mode" / "Execution protocol" section header in:
+   - `bi_data_modeler.py` (Bob): warns that WriteBRD → Bob's trigger; Alice's "finished" = Alice's task only
+   - `bi_solution_architect.py` (Eve): warns that WriteDataModel → Eve's trigger; Bob's "finished" = Bob's task only
+   - `bi_analytics_engineer.py` (Alex): warns that WriteExecutionPlan → Alex's trigger; predecessor "finished" messages are per-agent signals
+   - `bi_qa_engineer.py` (Edward): warns that WriteExecutionReport → Edward's trigger; predecessor "finished" messages are per-agent signals
+
+   Language used (adapted per agent):
+   ```
+   **Important — ignore other agents' completion messages:** This pipeline runs multiple agents
+   concurrently in a shared message pool. You will see messages from other agents saying "I have
+   finished the task" or similar. These messages signal that the SENDING AGENT has completed its
+   own individual role. They do NOT mean the overall pipeline is finished or that your work is not
+   needed. Your task starts when you observe a [trigger message type] and ends ONLY after
+   [mandatory method] has been called successfully. Never call end without first completing your task.
+   ```
+
+2. **MANDATORY block extended** in all four prompts with an explicit reminder:
+   ```
+   Seeing a "I have finished the task" message from another agent does NOT exempt you from this requirement.
+   ```
+
+**Why not suppress the source message instead:**
+Alice's final AIMessage is published by RoleZero's `_end()` mechanism as a standard part of the `Role.run()` flow. Suppressing it would require overriding `_end()` or `publish_message()` in all agents and would risk breaking MetaGPT internals. Addressing the confusion at the receiver side (Bob's reasoning prompt) is the safer and more targeted fix. If the warning proves insufficient in future runs, a stronger structural fix (e.g. overriding `_observe()` to filter `cause_by=RunCommand` messages from other agents' `send_to=ALL` broadcasts) can be implemented as DEV-68.
+
+**Thesis note (Evaluation section):**
+This deviation illustrates a subtle hazard of shared-message-pool multi-agent architectures: broadcast completion signals from one agent can confuse LLM reasoning in sibling agents that happen to receive them. The guard-prompt pattern (MANDATORY blocks + context warnings) is the mitigation; a more robust structural fix would use targeted message routing or observer filters to prevent cross-agent completion signals from entering unintended agents' reasoning contexts.
+
+**Files changed:**
+- `metagpt/prompts/bi/bi_data_modeler.py`
+- `metagpt/prompts/bi/bi_solution_architect.py`
+- `metagpt/prompts/bi/bi_analytics_engineer.py`
+- `metagpt/prompts/bi/bi_qa_engineer.py`
+
+---
+
+## Session 9 continuation — Structural handoff fix (2026-05-09)
+
+### DEV-68 — Structural `_observe()` filter in `BIBaseRole` to remove other agents' RunCommand messages from memory
+
+**Context:**
+DEV-67's prompt-level fix (cross-agent context warnings + extended MANDATORY blocks) proved insufficient — the pipeline still stopped after Alice after the fourth live run. The LLM (gpt-5.4-mini) could not reliably ignore Alice's "I have finished the task" RunCommand message even with explicit prompt instructions, because the message was literally present in the reasoning memory context.
+
+**Root cause (structural):**
+`RoleZero.observe_all_msg_from_buffer = True` causes ALL buffer messages to be added to `rc.memory` during `_observe()`, regardless of the `_watch` filter. Alice's final "I have finished the task" message has `cause_by=RunCommand` and is broadcast to every agent's buffer by `Role.run()` after `react()` returns. Downstream agents (Bob, Eve, Alex, Edward) receive both their activation trigger message AND Alice's RunCommand message. The RunCommand message enters their memory and is visible to the LLM at every subsequent reasoning step inside `_react()`.
+
+**Fix:**
+Created a `BIBaseRole(RoleZero)` base class in `metagpt/roles/bi/bi_base_role.py` that overrides `_observe()` to surgically remove other agents' RunCommand messages from memory after `super()._observe()` adds them.
+
+Algorithm:
+1. Before calling `super()._observe()`: snapshot the object IDs (`id()`) of any RunCommand messages already in `rc.memory.storage`. These represent the agent's own RunCommand messages (added directly by `_end()` in `RoleZero`, NOT via the buffer) — they must be preserved.
+2. Call `super()._observe()` — this pops the buffer and adds all messages to memory when `observe_all_msg_from_buffer=True`.
+3. After the call: identify any RunCommand messages in `rc.memory.storage` whose object ID is NOT in the pre-existing set. These are the newly injected foreign messages. Delete them via `rc.memory.delete()`.
+4. Return the original result from `super()._observe()` unchanged (the rc.news list / watch filter logic is unaffected).
+
+Why `id()` instead of content comparison:
+- The same agent might publish multiple RunCommand messages over several correction rounds; content comparison would delete the agent's own messages.
+- `id()` on in-memory Python objects is safe here because we compare within the same `_observe()` call scope.
+
+Why RunCommand specifically:
+- `cause_by=RunCommand` (string value of `any_to_str(RunCommand)`) is the marker used exclusively for "I have finished the task" broadcast messages. Legitimate inter-agent artifact messages (`WriteBRD`, `WriteDataModel`, etc.) use their respective Action class string.
+
+All five BI role classes updated to inherit `BIBaseRole` instead of `RoleZero` directly.
+
+**Files changed:**
+- `metagpt/roles/bi/bi_base_role.py` *(new file)*
+- `metagpt/roles/bi/bi_requirements_analyst.py` — `class BIRequirementsAnalyst(BIBaseRole)`
+- `metagpt/roles/bi/bi_data_modeler.py` — `class BIDataModeler(BIBaseRole)`
+- `metagpt/roles/bi/bi_solution_architect.py` — `class BISolutionArchitect(BIBaseRole)`
+- `metagpt/roles/bi/bi_analytics_engineer.py` — `class BIAnalyticsEngineer(BIBaseRole)`
+- `metagpt/roles/bi/bi_qa_engineer.py` — `class BIQAEngineer(BIBaseRole)`
+
+---
+
+### DEV-69 — Alice asks too many questions per turn: limit to 2 questions per message
+
+**Observed during:** Scenario A live runs (sessions 9 continuation).
+
+**Symptom:**
+Alice grouped 3–5 questions in a single `ask_human` call. The user types answers in a single terminal input line (pressing Enter sends). With 3+ questions in one message, the user is forced to omit some topics and Alice may not ask again, leading to incomplete elicitation coverage.
+
+**Fix:**
+Added an explicit rule to the Phase 1 rules in `metagpt/prompts/bi/bi_requirements_analyst.py`:
+```
+**Ask at most 2 questions per message.** The user types answers in a single terminal input line —
+grouping 3 or more questions into one message forces them to omit answers. Send a follow-up
+message to cover remaining topics.
+```
+
+**Files changed:**
+- `metagpt/prompts/bi/bi_requirements_analyst.py`
+
+---
+
+## Session 9 continuation — Scenario A live run (2026-05-09, run_scenA)
+
+### DEV-70 — Pipeline crash when JSON repair chain exhausts all attempts on escaped SQL strings
+
+**Observed during:** Scenario A live run, 2026-05-09 (`run_A_test_18h42.txt`). Task 13 (fact_sales TRANSFORMATION).
+
+**Symptom:**
+Alex's 3rd attempt to fix the `fact_sales` dbt model produced a response with a reasoning prefix ("I've completed tasks 1–12, and task 13 is still failing because...") followed by a ````json` command block. The 3-level repair chain in `parse_commands` (role_zero_utils.py) exhausted all fallbacks and hit `json.loads("")` → `JSONDecodeError: Expecting value: line 1 column 1 (char 0)`, crashing the whole pipeline. Tasks 14 and 15 never ran; no execution report or validation report were produced.
+
+**Root cause:**
+The `fact_sales` SQL references many DuckDB quoted column names (`c.\"Customer ID\"`, `p.\"Product Name\"`, etc.). Alex was including the full SQL string both in `DbtRunner.write_model` AND in the `tool_args.sql` field of the `execute_BI_task` task dict. This created an extremely long, complex JSON string with many `\"` escape sequences. After two dbt Binder errors requiring SQL corrections, the 3rd LLM response added a reasoning prefix before the JSON block. The `parse_code` regex failed to extract the JSON (it starts with the narrative, not the code fence), the LLM repair call returned a response that also failed, and the final `repair_escape_error` fallback produced an empty string → `json.loads("") → crash`.
+
+**Fixes applied (DEV-70a + DEV-70b):**
+
+DEV-70a — Framework fix in `metagpt/utils/role_zero_utils.py`:
+Wrapped the final `json.loads()` at line 123 in a `try/except json.JSONDecodeError` that returns a graceful "could not parse as JSON" error message instead of raising. This prevents any future JSON repair exhaustion from crashing the pipeline — the agent receives a clear retry prompt instead.
+
+DEV-70b — Prompt fix in `metagpt/prompts/bi/bi_analytics_engineer.py` (TRANSFORMATION section):
+Added explicit instruction: "when building the task dict to pass to execute_BI_task, omit the `sql` key from `tool_args` — pass only `model_name` and `db_path`. The SQL was already written to disk by write_model and is not read again here. Including the full SQL string in this JSON command block causes parsing failures due to escaped characters in column names." The `_run_dbt` dispatcher in `bi_analytics_engineer.py` was already confirmed to not use `tool_args.sql` at all — it only reads `model_name` and `db_path`.
+
+**Files changed:**
+- `metagpt/utils/role_zero_utils.py` (DEV-70a)
+- `metagpt/prompts/bi/bi_analytics_engineer.py` (DEV-70b)
+
+---
+
+### DEV-71 — Workspace isolation broken: Editor writes to `workspace/docs/` regardless of `--run-name`
+
+**Observed during:** Scenario A live run, 2026-05-09 (`run_scenA`).
+
+**Symptom:**
+`bi_team.py` `--run-name run_scenA` created `workspace/runs/run_scenA/docs/` as the per-run workspace and set `config.workspace.path` to it. However, all artifacts (BRD, dimensional model, execution plan, dbt models, DWH database) were written to `workspace/docs/` and `workspace/dwh.duckdb` (the global default path). The "Artifacts saved to:" banner at the end showed an empty directory listing because it scanned `workspace/runs/run_scenA/docs/` which was empty.
+
+**Root cause:**
+`Editor.working_dir` is a Pydantic field defaulting to `DEFAULT_WORKSPACE_ROOT` (= `metagpt_root / "workspace"`, from `metagpt/const.py`). It is set at instantiation time and does not read from `config.workspace.path`. When `_setup_workspace` updates `config.workspace.path`, the already-created Editor instances in each agent retain the old `DEFAULT_WORKSPACE_ROOT` as their working directory.
+
+**Fix:**
+In `bi_team.py`, after `team.hire([...])`, iterate over all roles and update each agent's `editor.working_dir` to `run_dir` (the per-run directory returned by `_setup_workspace`):
+```python
+for role in team.env.roles.values():
+    role.editor.working_dir = run_dir
+```
+
+Note: `publish_execution_report()` in `BIAnalyticsEngineer` already reads from `config.workspace.path` (DEV-62 fix), so it will correctly find the report in the new location once DEV-71 is fixed.
+
+**Files changed:**
+- `bi_team.py`
+
+---
+
+### DEV-72 — Mermaid SVG rendering path not isolated: SVGs went to `workspace/docs/` instead of per-run directory
+
+**Observed during:** Scenario A live run artifact consolidation, 2026-05-09 (`run_scenA_2`).
+
+**Symptom:**
+After DEV-71 fixed `Editor.working_dir` to point to the per-run directory, `BIDataModeler._render_mermaid_schemas()` still wrote SVG files to `workspace/docs/conceptual_schema.svg` and `workspace/docs/logical_schema.svg` — the global default path — instead of `workspace/runs/run_scenA_2/docs/`. The `.mermaid` text files were correctly isolated (written via `editor.write()` which uses `editor.working_dir`), but the SVG outputs from `mermaid_to_file()` used hardcoded relative paths that bypassed the isolation fix.
+
+**Root cause:**
+`_render_mermaid_schemas()` in `metagpt/roles/bi/bi_data_modeler.py` passed hardcoded string paths to `mermaid_to_file()`:
+```python
+output_file_without_suffix="workspace/docs/conceptual_schema"
+output_file_without_suffix="workspace/docs/logical_schema"
+```
+These were set before DEV-71 was introduced and were not updated when the per-run workspace isolation was added.
+
+**Fix:**
+Use `self.editor.working_dir` (already updated per DEV-71) to build the `docs_dir` path dynamically:
+```python
+docs_dir = str(self.editor.working_dir / "docs")
+await mermaid_to_file(
+    engine=config.mermaid.engine,
+    mermaid_code=conceptual_code,
+    output_file_without_suffix=f"{docs_dir}/conceptual_schema",
+    suffixes=["svg"],
+    config=config,
+)
+await mermaid_to_file(
+    engine=config.mermaid.engine,
+    mermaid_code=logical_code,
+    output_file_without_suffix=f"{docs_dir}/logical_schema",
+    suffixes=["svg"],
+    config=config,
+)
+logger.info(f"Mermaid schemas rendered to SVG in {docs_dir}")
+```
+
+**Files changed:**
+- `metagpt/roles/bi/bi_data_modeler.py`
+
+---
+
+### DEV-73 — DWH database path not isolated per run: `workspace/dwh.duckdb` always created at global path
+
+**Observed during:** Scenario A live run analysis, 2026-05-09 (`run_scenA_2`).
+
+**Symptom:**
+After DEV-71 isolated all Editor-written artifacts to the per-run directory, the DuckDB DWH was still created at `workspace/dwh.duckdb` (the global default), not at `workspace/runs/<run_name>/dwh.duckdb`. Consecutive runs overwrote the same DWH file, making artifacts from different runs indistinguishable.
+
+**Root cause:**
+Eve generates the DWH Technical Execution Plan using `"db_path": "workspace/dwh.duckdb"` in every task's `tool_args`. Eve does not know the per-run directory at plan-generation time (she only has access to what Alice/Bob published). Alex consumes these `db_path` values verbatim in `_run_duckdb()`, `_run_pandas()`, and `_run_dbt()` without any path rewriting.
+
+**Fix:**
+Added `_resolve_db_path(db_path)` to `BIAnalyticsEngineer`. The method checks if a `db_path` is a workspace-relative `.duckdb` path (i.e., not absolute) and redirects it to `config.workspace.path / <filename>` — the per-run workspace directory set by `bi_team._setup_workspace()` (DEV-71). Absolute paths are returned unchanged to avoid breaking manually specified paths.
+
+Applied in three dispatch methods:
+- `_run_duckdb()`: DuckDB INSTANTIATION and SCHEMA_CREATION tasks
+- `_run_pandas()`: DATA_INGESTION tasks (PandasLoader)
+- `_run_dbt()`: TRANSFORMATION tasks (dbt profile configuration uses db_path)
+
+The execution plan JSON on disk retains the original `workspace/dwh.duckdb` path (for readability/debuggability); only the runtime path used when actually opening the file is redirected.
+
+**Scope note:** This fix only applies to `.duckdb` paths. Supabase/PostgreSQL scenarios use `project_url`, `api_key`, and `connection_string` in `tool_args` — not `db_path` — so they are unaffected.
+
+**Files changed:**
+- `metagpt/roles/bi/bi_analytics_engineer.py`
+
+---
+
+### DEV-74 — Alex prompt: mandatory JSON-first constraint added to reduce parsing failures
+
+**Observed during:** Analysis of `run_A_test2_20h14.txt` (run_scenA_2), 2026-05-09.
+
+**Symptom:**
+The transcript showed 55 JSON parsing failures during Alex's 17-task execution, where Alex prepended natural language (e.g. "I'll now execute task 9 — dim_date...") before the JSON command block. Each failure triggered the 3-level repair chain (DEV-70a) and cost an additional LLM call + latency. Alex's total execution time was ~44.5 minutes; the parsing failures were a significant contributor.
+
+**Root cause:**
+Alex's prompt did not explicitly forbid text before the JSON array. The repair chain (DEV-70) recovers from these failures but cannot prevent them.
+
+**Fix:**
+Added constraint #7 to the General constraints section of `metagpt/prompts/bi/bi_analytics_engineer.py`:
+
+> **Your response MUST begin with `[` (the opening bracket of the JSON command array).** Never write any explanation, summary, or preamble before the `[`. The only valid format is `[{"command_name": "...", "args": {...}}]`. Any text before the `[` causes a parse failure, wastes a reasoning step, and slows down the pipeline significantly.
+
+**Files changed:**
+- `metagpt/prompts/bi/bi_analytics_engineer.py`
+
+---
+
+### DEV-75 — Dynamic execution state injection (CURRENT_STATE): custom `_think()` override on BIAnalyticsEngineer
+
+**Thesis design:**
+Section 4.2.3 describes Agent 4 (BI Analytics Engineer) as executing each task "in strict dependency order", tracking completed/active/failed tasks. The thesis does not specify the implementation mechanism for this state tracking.
+
+**Implementation:**
+A custom `CURRENT_STATE` string template is defined in `metagpt/prompts/bi/bi_analytics_engineer.py`:
+```
+## Current execution state
+Completed task IDs: {completed_task_ids}
+Currently active task ID: {active_task_id}
+Failed task IDs: {failed_task_ids}
+```
+BIAnalyticsEngineer overrides `_think()` to inject this state into `self.cmd_prompt_current_state` before each LLM call. The underlying `RoleZero._think()` includes this field in the assembled prompt. Three instance attributes maintain the state: `_completed_task_ids`, `_active_task_id`, `_failed_task_ids`, updated by `execute_BI_task()` after each dispatch.
+
+**Why:**
+RoleZero's standard prompt assembler already supports a `cmd_prompt_current_state` slot but does not populate it by default. Overriding `_think()` to fill this slot is the minimal-invasive way to inject per-task execution state into every LLM call without modifying the MetaGPT framework.
+
+**Files changed:**
+- `metagpt/roles/bi/bi_analytics_engineer.py` (`_think()` override, `_completed_task_ids`, `_active_task_id`, `_failed_task_ids` instance attributes, `execute_BI_task()` state updates)
+- `metagpt/prompts/bi/bi_analytics_engineer.py` (`CURRENT_STATE` template)
+
+---
+
+### DEV-76 — BIBaseRole as actual base class: thesis specifies direct RoleZero inheritance
+
+**Thesis design:**
+Section 4.1.1 describes RoleZero as the base class for agents that need autonomous ReAct loops with long-horizon task execution. Table 2 (Agent 1 attributes) shows that all agents are built "based on the RoleZero class." The thesis does not mention any intermediate base class.
+
+**Implementation:**
+All five BI agents inherit from `BIBaseRole` (introduced in DEV-68), not directly from `RoleZero`. `BIBaseRole` itself inherits from `RoleZero` and adds a single override: `_observe()` filters out other agents' `RunCommand` "finished" messages from the shared buffer before they reach an agent's memory. This prevents downstream agents' LLMs from interpreting completion signals from sibling agents as instructions to call `end` prematurely.
+
+The inheritance chain is: `RoleZero → BIBaseRole → {BIRequirementsAnalyst, BIDataModeler, BISolutionArchitect, BIAnalyticsEngineer, BIQAEngineer}`.
+
+**Why:**
+During the first successful multi-agent run, agents Bob, Eve, Alex, and Edward were each triggering their ReAct loop correctly, but Alice's `RunCommand`-type "finished" broadcast entered other agents' memories and confused their LLMs. The BIBaseRole layer provides a single, centralized fix without duplicating override code in each of the five agents.
+
+**Files changed:**
+- `metagpt/roles/bi/bi_base_role.py` (new file — `BIBaseRole` class)
+- `metagpt/roles/bi/bi_requirements_analyst.py` — changed parent to `BIBaseRole`
+- `metagpt/roles/bi/bi_data_modeler.py` — changed parent to `BIBaseRole`
+- `metagpt/roles/bi/bi_solution_architect.py` — changed parent to `BIBaseRole`
+- `metagpt/roles/bi/bi_analytics_engineer.py` — changed parent to `BIBaseRole`
+- `metagpt/roles/bi/bi_qa_engineer.py` — changed parent to `BIBaseRole`
+
+---
+
+### DEV-77 — dbt project not isolated per run: always created at `<repo_root>/dbt_projects/`
+
+**Observed during:** Workspace cleanup before Scenario C evaluation, 2026-05-09.
+
+**Symptom:**
+After DEV-71 (Editor isolation) and DEV-73 (DWH isolation), the dbt project — containing all SQL model files, `dbt_project.yml`, `profiles.yml`, and compiled/run artifacts — was still created at `<repo_root>/dbt_projects/<project_name>/`. Consecutive runs overwrote the same project directory, making it impossible to recover the SQL models for a specific past run without manual copying.
+
+**Root cause:**
+`DbtRunner.init_project()` defaulted to `DEFAULT_DBT_PROJECTS_DIR` (a module-level constant resolving to `<repo_root>/dbt_projects/`) whenever no explicit `project_dir` was provided. Alex always calls `init_project("bi_dwh")` without `project_dir`, so the project always landed at the global path regardless of `--run-name`.
+
+**Fix:**
+Two-part change:
+
+1. `metagpt/tools/bi/dbt_runner.py` — `init_project()` now reads `getattr(self, "_dbt_projects_dir", DEFAULT_DBT_PROJECTS_DIR)` instead of `DEFAULT_DBT_PROJECTS_DIR` directly, allowing a per-instance override without touching the `project_dir` argument.
+
+2. `bi_team.py` — After the existing DEV-71 editor loop, `BIAnalyticsEngineer._get_dbt_runner()._dbt_projects_dir` is set to `run_dir / "dbt_project"`. Alex's subsequent call to `init_project("bi_dwh")` then creates the project at `workspace/runs/<run_name>/dbt_project/bi_dwh/`.
+
+This applies to **all scenario types** (DuckDB and Supabase/PostgreSQL): the `_dbt_projects_dir` override only changes where the project directory is created; the adapter type, profile, and SQL content remain fully controlled by the execution plan.
+
+**Resulting per-run directory layout (complete isolation):**
+```
+workspace/runs/<run_name>/
+├── docs/              ← BRD, schemas, execution plan, execution report, validation report
+├── dbt_project/
+│   └── bi_dwh/        ← dbt_project.yml, profiles.yml, models/*.sql, target/
+└── dwh.duckdb         ← DuckDB only; Supabase scenarios use cloud DWH instead
+```
+
+**Files changed:**
+- `metagpt/tools/bi/dbt_runner.py` — `_dbt_projects_dir` instance attribute support in `init_project()`
+- `bi_team.py` — set `_dbt_projects_dir = run_dir / "dbt_project"` on `BIAnalyticsEngineer`'s `DbtRunner`
+
+
+
+### DEV-78 — SupabaseConnector field name mismatch: Eve generates `connection_string` instead of `url`/`key`/`postgres_url`
+
+**Observed during:** Live Scenario C practitioner evaluation run, 2026-05-10.
+
+**Symptom:**
+Alex was blocked executing task 9 (SCHEMA_CREATION on Supabase). The user had already supplied the Supabase URL, service-role key, and PostgreSQL URI through `ask_human`, but Alex kept re-asking for them. Root cause: the execution plan's task 9 `tool_args` contained `"connection_string": "SUPABASE_POSTGRES_CONNECTION_STRING"` (a single field), but `_run_supabase()` only reads three distinct fields: `url`, `key`, `postgres_url`.
+
+**Root cause:**
+Eve's prompt only said that a Supabase CREDENTIAL_REQUEST task should collect a PostgreSQL connection string. Eve (correctly) generated a single `connection_string` field in `tool_args`, because the prompt did not enumerate the three separate connector fields. `_run_supabase()` had no fallback for this naming pattern.
+
+**Fix:**
+Two-part change:
+
+1. `metagpt/roles/bi/bi_analytics_engineer.py` — `_run_supabase()` now falls back to `self._credentials` when `tool_args` lacks `url`/`key`/`postgres_url`, and also accepts `connection_string` as an alias for `postgres_url`. This handles both Eve's single-field pattern and the case where CREDENTIAL_REQUEST tasks were omitted from the plan.
+
+2. `metagpt/prompts/bi/bi_solution_architect.py` — The Supabase credential guidance now explicitly states that every SupabaseConnector task's `tool_args` must include all three fields separately: `"url"`, `"key"`, `"postgres_url"`. The phrase "Never use a single `connection_string` field" was added.
+
+**Files changed:**
+- `metagpt/roles/bi/bi_analytics_engineer.py` — `_run_supabase()` credential fallback and `connection_string` alias
+- `metagpt/prompts/bi/bi_solution_architect.py` — explicit three-field requirement for SupabaseConnector tasks
+
+---
+
+### DEV-79 — dbt model path doubling: `write_model()` returned absolute path; editor prepended `working_dir` again
+
+**Observed during:** Live Scenario C practitioner evaluation run, 2026-05-10 (TRANSFORMATION tasks, task 10 onward).
+
+**Symptom:**
+Alex was trying to call `Editor.edit_file_by_replace` on a dbt model file and repeatedly got `FileNotFoundError`. The path in the error showed the run-directory segment (`workspace/runs/<run_name>`) repeated three times, e.g.:
+`C:\...\workspace\runs\20260510_000555\workspace\runs\20260510_000555\workspace\runs\20260510_000555\dbt_project\bi_dwh\models\dim_date.sql`
+Alex retried 5 times without success.
+
+**Root cause:**
+`DbtRunner.write_model()` returned an **absolute** path such as `C:\Users\jonat\MetaGPT-BI\workspace\runs\20260510_000555\dbt_project\bi_dwh\models\dim_date.sql`. The LLM stripped the repo-root prefix (`C:\Users\jonat\MetaGPT-BI\`) and passed the remainder — `workspace\runs\20260510_000555\dbt_project\bi_dwh\models\dim_date.sql` — as a relative path to `edit_file_by_replace`. The editor's `_try_fix_path()` then prepended `working_dir` (which equals `C:\...\workspace\runs\20260510_000555\`, i.e., the run directory), doubling the run-dir segment. On each retry Alex read the error message's doubled path and used it as the next attempt, causing the editor to prepend again — tripling.
+
+**Fix:**
+Two-part change:
+
+1. `metagpt/tools/bi/dbt_runner.py` — Added `_relative_path()` helper that returns the path relative to `config.workspace.path` (which equals the editor's `working_dir`). `write_model()` and `write_schema()` now call `_relative_path()` instead of returning `str(model_path)` directly. The returned value is then safe to pass to Editor functions without doubling. Falls back to absolute if the path cannot be made relative.
+
+2. `metagpt/prompts/bi/bi_analytics_engineer.py` — Added explicit prohibition in the TRANSFORMATION step 1 instruction: "**CRITICAL: never use Editor.write, Editor.create_file, or Editor.edit_file_by_replace for dbt model SQL files. Only DbtRunner.write_model() writes SQL to the correct location.**" Same note added to step 3 for fix-and-retry cycles.
+
+**Files changed:**
+- `metagpt/tools/bi/dbt_runner.py` — `_relative_path()` helper; `write_model()` and `write_schema()` return workspace-relative paths
+- `metagpt/prompts/bi/bi_analytics_engineer.py` — explicit ban on Editor use for dbt model files
+
+
+### DEV-80 — Alex calls `end` after `publish_execution_report` fails, skipping QA phase entirely
+
+**Observed during:** Scenario C transcript analysis (2026-05-10).
+
+**Symptom:**
+At the end of the Scenario C run, `Editor.write` succeeded but `publish_execution_report()` returned an error ("file not found"). Alex immediately called `end` without retrying, meaning the Execution Report was never published to the shared message pool and Edward (BIQAEngineer) was never triggered. The QA phase was silently skipped.
+
+**Root cause:**
+Two compounding issues:
+1. Alex wrote the report to the wrong path (`workspace/docs/execution_report.md` instead of `docs/execution_report.md` relative to working_dir), so the file landed at `run_dir/workspace/docs/` while `publish_execution_report()` looked at `run_dir/docs/`.
+2. The MANDATORY guard in Alex's prompt said "call end only after publish_execution_report() returns successfully" but gave no explicit "if it fails, fix and retry" instruction. The LLM called `end` treating the failure as a terminal condition.
+
+**Fix:**
+Two-part change:
+1. `metagpt/roles/bi/bi_analytics_engineer.py` — `publish_execution_report()` error message now includes the exact absolute path it expected and explicit instruction to re-call `Editor.write` with the correct relative path.
+2. `metagpt/prompts/bi/bi_analytics_engineer.py` — MANDATORY guard expanded to step 3: "If publish_execution_report() returns an error: do NOT call end. Re-call Editor.write with exactly `path='docs/execution_report.md'` and retry. Repeat until it returns success."
+
+**Files changed:**
+- `metagpt/roles/bi/bi_analytics_engineer.py` — `publish_execution_report()` error message
+- `metagpt/prompts/bi/bi_analytics_engineer.py` — MANDATORY guard with explicit retry-on-failure
+
+---
+
+### DEV-81 — Eve uses `*.csv` wildcard in DATA_INGESTION file paths when Alice records no specific filenames
+
+**Observed during:** Scenario C transcript analysis (2026-05-10).
+
+**Symptom:**
+All 6 DATA_INGESTION tasks in the Scenario C execution plan had `"file_path": "C:\...\workspace\data\*.csv"`. PandasLoader does not expand glob patterns — all 6 tasks failed immediately with "File not found: *.csv". Alex correctly fell back to `ask_human` and the user provided specific filenames, but this caused 6 avoidable manual interruptions.
+
+**Root cause:**
+Alice's Phase 1 data sources section asked for "connection details (local file path)" but did not require Alice to probe for EACH individual file's exact name when the user mentioned multiple files. The user said "I have 6 CSV files in workspace/data/" — Alice recorded this vaguely in BRD Section 6, and Eve (lacking specific names) generated wildcards.
+
+**Fix:**
+`metagpt/prompts/bi/bi_requirements_analyst.py` — Added explicit instruction to the data sources topic (#5): "For CSV or Excel file sources: if the user mentions multiple files, ask for the exact filename (including extension) for every individual file. Do not accept a directory path or vague description — probe until you have the precise filename for each file. Record every exact filename in BRD Section 6."
+
+**Files changed:**
+- `metagpt/prompts/bi/bi_requirements_analyst.py` — data sources topic: per-file exact filename requirement
+
+---
+
+### DEV-82 — DataSourceInspector.inspect_csv() hardcoded comma delimiter (same root cause as PandasLoader separator issue)
+
+**Observed during:** Scenario C post-mortem code audit (2026-05-10).
+
+**Symptom:**
+`DataSourceInspector.inspect_csv()` used `pd.read_csv(file_path)` and `pd.read_csv(file_path, nrows=5)` with no `sep` parameter. Alice uses this tool during Phase 1 elicitation to inspect the schema of source files. When the practitioner's CSV files used semicolon delimiters, the inspection would have returned a single-column DataFrame with all values concatenated — no useful schema info for the BRD.
+
+**Root cause:**
+Same root cause as the PandasLoader separator issue (see Scenario C pre-checks): `pd.read_csv()` defaults to comma. The fix applied to PandasLoader was not also applied to DataSourceInspector.
+
+**Fix:**
+`metagpt/tools/bi/data_source_inspector.py` — `inspect_csv()` now uses `sep=None, engine="python"` by default (auto-detection) and accepts an optional `sep` parameter for explicit override, consistent with the PandasLoader fix.
+
+**Files changed:**
+- `metagpt/tools/bi/data_source_inspector.py` — `inspect_csv()`: `sep` parameter + auto-detect default
+
+---
+
+### DEV-83 — SQL injection via f-string in SupabaseConnector.verify_table() and list_tables()
+
+**Observed during:** Scenario C post-mortem code audit (2026-05-10).
+
+**Symptom:**
+`verify_table()` and `list_tables()` built SQL strings using f-string interpolation of schema and table names (e.g. `WHERE table_schema = '{schema}'`). If a schema or table name contained single quotes or SQL keywords, the query would break or behave unexpectedly.
+
+**Risk level:** Low in practice (names come from the LLM based on dimensional model, not from untrusted user text directly). Nonetheless it violates secure coding standards for SQL construction.
+
+**Fix:**
+`metagpt/tools/bi/supabase_connector.py` — Added `_safe_identifier()` static method that validates schema/table names against the regex `^[a-zA-Z0-9_]+$` and raises `ValueError` for any name containing unexpected characters. Both `verify_table()` and `list_tables()` now pass names through `_safe_identifier()` before interpolation.
+
+**Files changed:**
+- `metagpt/tools/bi/supabase_connector.py` — `_safe_identifier()` helper; `verify_table()` and `list_tables()` use it
+
+---
+
+### DEV-84 — Missing retry guidance in Eve and Edward MANDATORY guards
+
+**Observed during:** Scenario C post-mortem code audit (2026-05-10).
+
+**Symptom:**
+Eve's MANDATORY guard said "call end immediately after generate_execution_plan() returns successfully" but gave no instruction for the failure case. Similarly for Edward's generate_validation_report(). An LLM that receives a validation error might call end anyway, silently skipping the artifact.
+
+**Fix:**
+Both prompt MANDATORY guards now include an explicit failure branch:
+- Eve: "If generate_execution_plan() returns a validation error, read the error, correct the schema violation, and retry. Do NOT call end until it returns successfully."
+- Edward: "If generate_validation_report() returns an error, diagnose the cause, fix the inputs, and retry. Do NOT call end until it returns successfully."
+
+**Files changed:**
+- `metagpt/prompts/bi/bi_solution_architect.py` — MANDATORY guard: retry-on-failure instruction
+- `metagpt/prompts/bi/bi_qa_engineer.py` — MANDATORY guard: retry-on-failure instruction
+
+
+### DEV-85 — Scenario C (CSV → Supabase) architectural gap: dbt ran against DuckDB instead of Supabase; Supabase tables empty
+
+**Observed during:** Scenario C practitioner evaluation run analysis (2026-05-10).
+
+**Symptom:**
+The Scenario C execution plan had DATA_INGESTION tasks using PandasLoader (DuckDB-only) and TRANSFORMATION tasks that included `db_path: "workspace/dwh.duckdb"`. All 26 tasks completed without error from Alex's perspective, but:
+1. All raw and transformed data ended up in DuckDB (`workspace/dwh.duckdb`), not in Supabase.
+2. Supabase only received the DDL from task 9 (CREATE TABLE statements) — all 17 fact and dimension tables exist in Supabase but contain 0 rows.
+3. The `target_connection_string` field in transformation task `tool_args` was completely ignored by `_run_dbt()`.
+
+**Root cause — three compounding issues:**
+1. **Eve's plan used PandasLoader for ingestion**: PandasLoader.load_file() always writes to DuckDB. For CSV → Supabase, Eve should use SupabaseConnector.load_csv() for DATA_INGESTION tasks. Eve's prompt gave no scenario-specific guidance on which ingestion tool to select.
+2. **`_run_dbt()` auto-configures DuckDB profile**: When `profiles.yml` doesn't exist, `_run_dbt()` always creates a DuckDB profile based on `db_path`. Even when `target_connection_string` is present in `tool_args`, it was never read — DuckDB was always selected.
+3. **No CONNECTION_SETUP task for postgres profile**: A CONNECTION_SETUP task with `db_type=postgres` would configure the dbt postgres profile before TRANSFORMATION tasks. Eve's plan didn't include one.
+
+**Fix — three-part change:**
+1. `metagpt/roles/bi/bi_analytics_engineer.py` — Added `_parse_postgres_url()` static helper that extracts host/port/user/password/dbname from a `postgresql://` URL. Updated `_run_dbt()` TRANSFORMATION branch: if `profiles.yml` doesn't exist AND `target_connection_string` is present AND no `db_path` is provided, auto-configure a postgres (Supabase) profile instead of DuckDB. Updated CONNECTION_SETUP branch: accept `postgres_url` or `target_connection_string` as a single-URL alternative to individual host/port/user/password fields.
+2. `metagpt/prompts/bi/bi_solution_architect.py` — Added "Critical tool-selection constraint for CSV + Supabase scenarios": explicitly states that PandasLoader CANNOT be used when Supabase is the DWH; DATA_INGESTION must use SupabaseConnector.load_csv(); a CONNECTION_SETUP task (DbtRunner, db_type=postgres, postgres_url=<credential>) must precede TRANSFORMATION tasks; TRANSFORMATION tool_args must include target_connection_string but NOT db_path.
+
+**Correct Scenario C execution plan structure (after fix):**
+1. CREDENTIAL_REQUEST: Collect Supabase URL, service role key, postgres connection string
+2. SCHEMA_CREATION (SupabaseConnector): Create staging tables in Supabase
+3–N. DATA_INGESTION (SupabaseConnector.load_csv): Load each CSV into a Supabase staging table
+N+1. SCHEMA_CREATION (SupabaseConnector): Create fact and dimension tables in Supabase
+N+2. CONNECTION_SETUP (DbtRunner, db_type=postgres, postgres_url=<credential>): Configure dbt postgres profile
+N+3 onward. TRANSFORMATION (DbtRunner): Run dbt models against Supabase
+
+**Note:** The QA phase (Edward) would have detected the 0-row tables and date format errors if it had been triggered (see DEV-80). The Scenario C run was completed but the DWH output is invalid for the Supabase target.
+
+**Files changed:**
+- `metagpt/roles/bi/bi_analytics_engineer.py` — `_parse_postgres_url()` helper; `_run_dbt()` TRANSFORMATION: postgres auto-profile; CONNECTION_SETUP: postgres_url single-URL support
+- `metagpt/prompts/bi/bi_solution_architect.py` — Critical CSV+Supabase tool selection constraint
+

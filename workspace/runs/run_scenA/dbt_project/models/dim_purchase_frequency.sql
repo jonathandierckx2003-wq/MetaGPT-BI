@@ -1,0 +1,1 @@
+SELECT DISTINCT "Frequency of Purchases" AS frequency_of_purchases FROM staging_customer_details WHERE "Frequency of Purchases" IS NOT NULL

@@ -120,6 +120,20 @@ class SupabaseConnector:
         except Exception as exc:
             raise RuntimeError(f"Query failed: {exc}") from exc
 
+    @staticmethod
+    def _safe_identifier(name: str) -> str:
+        """Validate and return a SQL identifier (schema or table name).
+
+        Raises ValueError if the name contains characters outside [a-zA-Z0-9_],
+        preventing SQL injection via f-string-built queries.
+        """
+        import re
+        if not re.match(r"^[a-zA-Z0-9_]+$", name):
+            raise ValueError(
+                f"Invalid SQL identifier '{name}': only letters, digits, and underscores are allowed."
+            )
+        return name
+
     def verify_table(self, table_name: str) -> dict[str, Any]:
         """Check that a table exists and return its column definitions.
 
@@ -130,8 +144,8 @@ class SupabaseConnector:
             Dict with 'exists' (bool) and 'columns' (list of {name, type}).
         """
         parts = table_name.split(".")
-        schema = parts[0] if len(parts) == 2 else "public"
-        table = parts[-1]
+        schema = self._safe_identifier(parts[0] if len(parts) == 2 else "public")
+        table = self._safe_identifier(parts[-1])
         try:
             rows = self.run_query(
                 f"SELECT column_name, data_type "
@@ -155,6 +169,7 @@ class SupabaseConnector:
         Returns:
             List of schema-qualified table names (e.g. 'public.fact_sales').
         """
+        schema = self._safe_identifier(schema)
         rows = self.run_query(
             f"SELECT table_schema || '.' || table_name AS full_name "
             f"FROM information_schema.tables "

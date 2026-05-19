@@ -18,17 +18,26 @@ class PandasLoader:
     All I/O happens through pandas DataFrames so the LLM does not need to
     know the underlying file format — it passes the file path and target table
     name and the tool handles the rest.
+
+    CSV delimiter is auto-detected by default (sep=None). Pass an explicit sep
+    only when auto-detection produces wrong column splits — sep can be any
+    character (e.g. sep=';', sep=',', sep='\\t').
     """
 
     SUPPORTED_EXTENSIONS = {".csv", ".xlsx", ".xls"}
 
-    def _read_file(self, file_path: str) -> pd.DataFrame:
+    def _read_file(self, file_path: str, sep: str | None = None) -> pd.DataFrame:
         path = Path(file_path)
         if not path.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
         ext = path.suffix.lower()
         if ext == ".csv":
-            return pd.read_csv(file_path)
+            if sep is not None:
+                # Explicit override: caller specifies the exact separator character.
+                # Works for any character including comma (','), semicolon (';'), tab ('\t'), etc.
+                return pd.read_csv(file_path, sep=sep)
+            # Default: Python CSV sniffer auto-detects comma, semicolon, tab, pipe, etc.
+            return pd.read_csv(file_path, sep=None, engine="python")
         elif ext in (".xlsx", ".xls"):
             return pd.read_excel(file_path)
         else:
@@ -37,7 +46,13 @@ class PandasLoader:
                 f"Supported: {', '.join(self.SUPPORTED_EXTENSIONS)}"
             )
 
-    def load_file(self, file_path: str, target_table: str, db_path: str) -> dict[str, Any]:
+    def load_file(
+        self,
+        file_path: str,
+        target_table: str,
+        db_path: str,
+        sep: str | None = None,
+    ) -> dict[str, Any]:
         """Load a flat file into a DuckDB table, creating or replacing the table.
 
         Uses pandas to read the file and DuckDB's native DataFrame ingestion to
@@ -47,11 +62,16 @@ class PandasLoader:
             file_path: Absolute or relative path to the CSV or Excel file.
             target_table: Name of the DuckDB table to create (or replace).
             db_path: Path to the target DuckDB database file.
+            sep: CSV delimiter override. When None (default), the delimiter is
+                 auto-detected by Python's CSV sniffer — handles comma, semicolon,
+                 tab, pipe, and other common separators. Pass an explicit character
+                 (e.g. sep=';', sep=',', sep='\\t') only when auto-detection
+                 produces wrong column splits. Ignored for Excel files.
 
         Returns:
             Dict with 'table' (str), 'rows_loaded' (int), 'columns' (list[str]).
         """
-        df = self._read_file(file_path)
+        df = self._read_file(file_path, sep=sep)
         conn = duckdb.connect(db_path)
         try:
             conn.execute(f"CREATE OR REPLACE TABLE {target_table} AS SELECT * FROM df")
@@ -64,28 +84,30 @@ class PandasLoader:
             "columns": df.columns.tolist(),
         }
 
-    def infer_schema(self, file_path: str) -> list[dict[str, str]]:
+    def infer_schema(self, file_path: str, sep: str | None = None) -> list[dict[str, str]]:
         """Infer column names and pandas dtypes from a flat file without loading it to a DB.
 
         Useful for Agent 1 (DataSourceInspector) and for pre-validation before loading.
 
         Args:
             file_path: Path to the CSV or Excel file.
+            sep: CSV delimiter override. Auto-detected when None.
 
         Returns:
             List of dicts with keys 'name' (column name) and 'dtype' (pandas dtype string).
         """
-        df = self._read_file(file_path)
+        df = self._read_file(file_path, sep=sep)
         return [{"name": col, "dtype": str(df[col].dtype)} for col in df.columns]
 
-    def get_row_count(self, file_path: str) -> int:
+    def get_row_count(self, file_path: str, sep: str | None = None) -> int:
         """Return the number of data rows in a flat file (headers not counted).
 
         Args:
             file_path: Path to the CSV or Excel file.
+            sep: CSV delimiter override. Auto-detected when None.
 
         Returns:
             Integer row count.
         """
-        df = self._read_file(file_path)
+        df = self._read_file(file_path, sep=sep)
         return len(df)

@@ -1,0 +1,70 @@
+%%{init: {'theme': 'default', 'themeVariables': { 'fontFamily': 'Inter' }}}%%
+erDiagram
+    CUSTOMER ||--o{ COMMERCE_INTERACTION : participates_in
+    PRODUCT ||--o{ COMMERCE_INTERACTION : relates_to
+    SEASON ||--o{ COMMERCE_INTERACTION : classifies
+    DATE ||--o{ COMMERCE_INTERACTION : occurs_on
+    PROMO_CODE ||--o{ COMMERCE_INTERACTION : uses
+    SUBSCRIPTION_STATUS ||--o{ CUSTOMER : classifies
+    GEOGRAPHY ||--o{ CUSTOMER : located_in
+    AGE_GROUP ||--o{ CUSTOMER : belongs_to
+    PURCHASE_FREQUENCY_SEGMENT ||--o{ CUSTOMER : assigned_to
+    REVIEW ||--o{ COMMERCE_INTERACTION : records
+    CUSTOMER ||--o{ CUSTOMER_SEGMENTATION : summarized_in
+    GEOGRAPHY ||--o{ CUSTOMER_SEGMENTATION : grouped_by
+    AGE_GROUP ||--o{ CUSTOMER_SEGMENTATION : grouped_by
+    PURCHASE_FREQUENCY_SEGMENT ||--o{ CUSTOMER_SEGMENTATION : grouped_by
+
+    CUSTOMER {
+        string customer
+    }
+
+    PRODUCT {
+        string product
+    }
+
+    SEASON {
+        string season
+    }
+
+    DATE {
+        date date
+    }
+
+    PROMO_CODE {
+        string promo_code
+    }
+
+    SUBSCRIPTION_STATUS {
+        string subscription_status
+    }
+
+    GEOGRAPHY {
+        string us_state
+    }
+
+    AGE_GROUP {
+        string age_group
+    }
+
+    PURCHASE_FREQUENCY_SEGMENT {
+        string purchase_frequency_segment
+    }
+
+    REVIEW {
+        decimal review_rating
+    }
+
+    COMMERCE_INTERACTION {
+        decimal revenue
+        decimal order_value
+        decimal discount_rate
+        decimal promo_code_redemption_rate
+        integer purchase_count
+        integer view_count
+        integer conversion_count
+    }
+
+    CUSTOMER_SEGMENTATION {
+        integer customer_count
+    }

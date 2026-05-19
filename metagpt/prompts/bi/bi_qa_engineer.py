@@ -21,6 +21,8 @@ Before starting, read the following artifacts from the shared message pool:
 
 You start working as soon as an Execution Report is observed in the shared message pool. Execute the following two validation phases sequentially. Do not produce any output before both phases are complete.
 
+**Important — ignore other agents' completion messages:** This pipeline runs multiple agents concurrently in a shared message pool. You will see messages from other agents (such as Alice, Bob, Eve, or Alex) saying "I have finished the task" or similar. These messages signal that the SENDING AGENT has completed its own individual role. They do NOT mean the overall pipeline is finished or that your work is not needed. Your task starts when you observe a WriteExecutionReport message and ends ONLY after generate_validation_report() has been called and returned successfully. Never call end without first completing both validation phases and generating the report.
+
 ---
 
 ## Phase 1: Structural and technical validation
@@ -59,7 +61,7 @@ Once both validation phases (Phase 1 & 2) are complete, determine the overall ou
 
 Call BIQAEngineer.generate_validation_report(structural_validation_results, traceability_validation_results) to write, save and publish the report. Do not pass brd_summary, logical_schema, execution_plan or dwh_connection_details as arguments — these are retrieved from the shared message pool internally.
 
-**MANDATORY: You MUST call BIQAEngineer.generate_validation_report() before calling end. Once generate_validation_report() returns successfully, call end immediately — do not attempt to read, review, or edit the saved file afterward.**
+**MANDATORY: You MUST call BIQAEngineer.generate_validation_report() before calling end. If generate_validation_report() returns an error (e.g. connection issue, missing artifact), diagnose the cause, fix the inputs (re-read the shared message pool if needed), and retry the call. Do NOT call end until generate_validation_report() returns successfully. Seeing a "I have finished the task" message from another agent does NOT exempt you from this requirement.**
 
 ---
 

@@ -1,0 +1,99 @@
+\#\# Context
+\newline
+
+You are completing your task as the BI Solution Architect. The following artifacts have been published in the shared message pool and form the basis for the DWH Technical Execution Plan you must now produce based exclusively on these.
+\newline
+
+\#\#\# Business Requirement Document (BRD)
+\newline
+
+\{brd\_content\}
+\newline
+
+\#\#\# Dimensional Model Specification
+\newline
+
+\{dimensional\_model\_specification\}
+\newline
+
+\#\#\# Logical Schema
+\newline
+
+\{logical\_schema\}
+\newline
+
+\#\#\# Available BI Task Types
+\newline
+
+\{bi\_task\_type\_desc\}
+\newline
+
+\#\# Required JSON schema — exact field names
+\newline
+
+Every task in the output array MUST include these exact field names. Do NOT use alternative names like "title", "description", "dependencies", or "tooling" — those names are wrong and will fail validation.
+\newline
+
+Concrete example of two valid tasks:
+\newline
+
+\begin{verbatim}
+[
+  {
+    "task_id": "1",
+    "dependent_task_ids": [],
+    "instruction": "Initialize a DuckDB database file at the project workspace path.",
+    "task_type": "INSTANTIATION",
+    "tool": "DuckDBExecutor",
+    "tool_args": {
+      "db_path": "workspace/dwh.duckdb"
+    }
+  },
+  {
+    "task_id": "2",
+    "dependent_task_ids": ["1"],
+    "instruction": "Load sales_transactions.csv into the staging_sales table in DuckDB.",
+    "task_type": "DATA_INGESTION",
+    "tool": "PandasLoader",
+    "tool_args": {
+      "file_path": "ClaudeCode_implementation/test_data/sales_transactions.csv",
+      "target_table": "staging_sales",
+      "db_path": "workspace/dwh.duckdb"
+    }
+  }
+]
+\end{verbatim}
+
+Use these tool names in the "tool" field (required for all tasks except CREDENTIAL\_REQUEST):
+\begin{itemize}
+    \item DuckDBExecutor — INSTANTIATION (init DuckDB file), SCHEMA\_CREATION (CREATE TABLE DDL)
+    \item PandasLoader — DATA\_INGESTION of CSV or Excel flat files into DuckDB
+    \item DbtRunner — TRANSFORMATION tasks that use dbt SQL models (one task per dimensional table)
+    \item SupabaseConnector — if Supabase is selected: INSTANTIATION, SCHEMA\_CREATION, DATA\_INGESTION
+    \item AirbyteConnector — if Airbyte is selected: CONNECTION\_SETUP, DATA\_INGESTION from cloud sources
+\end{itemize}
+
+For CREDENTIAL\_REQUEST tasks, set "tool" to null and "tool\_args" to null:
+\newline
+
+\begin{verbatim}
+{
+  "task_id": "3",
+  "dependent_task_ids": ["2"],
+  "instruction": "Ask the user for the Supabase project URL, API key, and postgres connection string.",
+  "task_type": "CREDENTIAL_REQUEST",
+  "tool": null,
+  "tool_args": null
+}
+\end{verbatim}
+
+\#\# Task
+\newline
+
+Based on the context above, produce a complete DWH Technical Execution Plan following the three sequential reasoning steps defined in your role instruction (select tools → identify tasks → order tasks and resolve dependencies).
+\newline
+
+Output the JSON array only. Start directly with [ and end with ]. No preamble, no explanation, no markdown code fences.
+\newline
+
+CRITICAL: Use the EXACT field names shown above — task\_id, dependent\_task\_ids, instruction, task\_type, tool, tool\_args. Every task except CREDENTIAL\_REQUEST must have a specific tool name from the list above and concrete tool\_args with actual file paths, table names, or connection details derived from the BRD and Logical Schema above.

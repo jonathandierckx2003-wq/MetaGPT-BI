@@ -1,0 +1,7 @@
+bi_dwh:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: C:\Users\jonat\MetaGPT-BI\workspace\runs\20260510_000555\dwh.duckdb
+      schema: main

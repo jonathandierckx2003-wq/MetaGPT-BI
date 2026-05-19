@@ -1,0 +1,1 @@
+SELECT DISTINCT "Interaction type" AS interaction_type FROM staging_e_commerce_sales_data WHERE "Interaction type" IS NOT NULL

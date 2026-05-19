@@ -5,14 +5,14 @@ from metagpt.actions.bi.write_data_model import WriteDataModel
 from metagpt.actions.bi.write_execution_plan import WriteExecutionPlan
 from metagpt.logs import logger
 from metagpt.prompts.bi.bi_solution_architect import BI_SOLUTION_ARCHITECT_INSTRUCTION
-from metagpt.roles.di.role_zero import RoleZero
+from metagpt.roles.bi.bi_base_role import BIBaseRole
 from metagpt.schema import Message
 from metagpt.tools.tool_registry import register_tool
 from metagpt.utils.common import any_to_name, any_to_str
 
 
 @register_tool(include_functions=["generate_execution_plan"])
-class BISolutionArchitect(RoleZero):
+class BISolutionArchitect(BIBaseRole):
     """Agent 3: Translates dimensional design artifacts into a DWH Technical Execution Plan.
 
     Executes three sequential reasoning steps (select tools → identify tasks →

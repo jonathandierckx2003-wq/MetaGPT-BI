@@ -1,0 +1,335 @@
+[
+  {
+    "task_id": "1",
+    "dependent_task_ids": [],
+    "instruction": "Initialize the DuckDB workspace database file for staging, modeling, and validation of the HR monthly reporting DWH.",
+    "task_type": "INSTANTIATION",
+    "tool": "DuckDBExecutor",
+    "tool_args": {
+      "db_path": "workspace/dwh.duckdb"
+    }
+  },
+  {
+    "task_id": "2",
+    "dependent_task_ids": ["1"],
+    "instruction": "Create the raw staging tables in DuckDB to receive the 6 CSV source files from the source folder before transformation into the dimensional model.",
+    "task_type": "SCHEMA_CREATION",
+    "tool": "DuckDBExecutor",
+    "tool_args": {
+      "db_path": "workspace/dwh.duckdb",
+      "ddl": [
+        "CREATE TABLE IF NOT EXISTS stg_hr_file_1 (raw_payload VARCHAR);",
+        "CREATE TABLE IF NOT EXISTS stg_hr_file_2 (raw_payload VARCHAR);",
+        "CREATE TABLE IF NOT EXISTS stg_hr_file_3 (raw_payload VARCHAR);",
+        "CREATE TABLE IF NOT EXISTS stg_hr_file_4 (raw_payload VARCHAR);",
+        "CREATE TABLE IF NOT EXISTS stg_hr_file_5 (raw_payload VARCHAR);",
+        "CREATE TABLE IF NOT EXISTS stg_hr_file_6 (raw_payload VARCHAR);"
+      ]
+    }
+  },
+  {
+    "task_id": "3",
+    "dependent_task_ids": ["2"],
+    "instruction": "Load the first CSV source file from the shared data folder into the corresponding staging table in DuckDB.",
+    "task_type": "DATA_INGESTION",
+    "tool": "PandasLoader",
+    "tool_args": {
+      "file_path": "C:\\Users\\jonat\\MetaGPT-BI\\workspace\\data\\*.csv",
+      "target_table": "stg_hr_file_1",
+      "db_path": "workspace/dwh.duckdb"
+    }
+  },
+  {
+    "task_id": "4",
+    "dependent_task_ids": ["2"],
+    "instruction": "Load the second CSV source file from the shared data folder into the corresponding staging table in DuckDB.",
+    "task_type": "DATA_INGESTION",
+    "tool": "PandasLoader",
+    "tool_args": {
+      "file_path": "C:\\Users\\jonat\\MetaGPT-BI\\workspace\\data\\*.csv",
+      "target_table": "stg_hr_file_2",
+      "db_path": "workspace/dwh.duckdb"
+    }
+  },
+  {
+    "task_id": "5",
+    "dependent_task_ids": ["2"],
+    "instruction": "Load the third CSV source file from the shared data folder into the corresponding staging table in DuckDB.",
+    "task_type": "DATA_INGESTION",
+    "tool": "PandasLoader",
+    "tool_args": {
+      "file_path": "C:\\Users\\jonat\\MetaGPT-BI\\workspace\\data\\*.csv",
+      "target_table": "stg_hr_file_3",
+      "db_path": "workspace/dwh.duckdb"
+    }
+  },
+  {
+    "task_id": "6",
+    "dependent_task_ids": ["2"],
+    "instruction": "Load the fourth CSV source file from the shared data folder into the corresponding staging table in DuckDB.",
+    "task_type": "DATA_INGESTION",
+    "tool": "PandasLoader",
+    "tool_args": {
+      "file_path": "C:\\Users\\jonat\\MetaGPT-BI\\workspace\\data\\*.csv",
+      "target_table": "stg_hr_file_4",
+      "db_path": "workspace/dwh.duckdb"
+    }
+  },
+  {
+    "task_id": "7",
+    "dependent_task_ids": ["2"],
+    "instruction": "Load the fifth CSV source file from the shared data folder into the corresponding staging table in DuckDB.",
+    "task_type": "DATA_INGESTION",
+    "tool": "PandasLoader",
+    "tool_args": {
+      "file_path": "C:\\Users\\jonat\\MetaGPT-BI\\workspace\\data\\*.csv",
+      "target_table": "stg_hr_file_5",
+      "db_path": "workspace/dwh.duckdb"
+    }
+  },
+  {
+    "task_id": "8",
+    "dependent_task_ids": ["2"],
+    "instruction": "Load the sixth CSV source file from the shared data folder into the corresponding staging table in DuckDB.",
+    "task_type": "DATA_INGESTION",
+    "tool": "PandasLoader",
+    "tool_args": {
+      "file_path": "C:\\Users\\jonat\\MetaGPT-BI\\workspace\\data\\*.csv",
+      "target_table": "stg_hr_file_6",
+      "db_path": "workspace/dwh.duckdb"
+    }
+  },
+  {
+    "task_id": "9",
+    "dependent_task_ids": ["3", "4", "5", "6", "7", "8"],
+    "instruction": "Create the Supabase-hosted logical dimensional schema in PostgreSQL for the HR monthly reporting model, including all required dimensions and facts from the logical schema.",
+    "task_type": "SCHEMA_CREATION",
+    "tool": "SupabaseConnector",
+    "tool_args": {
+      "connection_string": "SUPABASE_POSTGRES_CONNECTION_STRING",
+      "ddl": [
+        "CREATE TABLE IF NOT EXISTS dim_date (date_key INTEGER PRIMARY KEY, month DATE, month_name TEXT, year INTEGER, year_month_key TEXT);",
+        "CREATE TABLE IF NOT EXISTS dim_person (person_key INTEGER PRIMARY KEY, individual_fdcp TEXT, person_identifier TEXT, person_name TEXT);",
+        "CREATE TABLE IF NOT EXISTS dim_contract (contract_key INTEGER PRIMARY KEY, contract_identifier TEXT, contract_start_date DATE, contract_end_date DATE, contract_status TEXT);",
+        "CREATE TABLE IF NOT EXISTS dim_age_band (age_band_key INTEGER PRIMARY KEY, age_band TEXT);",
+        "CREATE TABLE IF NOT EXISTS dim_seniority (seniority_key INTEGER PRIMARY KEY, seniority TEXT);",
+        "CREATE TABLE IF NOT EXISTS dim_gender (gender_key INTEGER PRIMARY KEY, gender TEXT);",
+        "CREATE TABLE IF NOT EXISTS dim_region (region_key INTEGER PRIMARY KEY, region TEXT);",
+        "CREATE TABLE IF NOT EXISTS dim_department (department_key INTEGER PRIMARY KEY, department TEXT);",
+        "CREATE TABLE IF NOT EXISTS dim_category (category_key INTEGER PRIMARY KEY, category TEXT);",
+        "CREATE TABLE IF NOT EXISTS dim_postal_code (postal_code_key INTEGER PRIMARY KEY, postal_code TEXT);",
+        "CREATE TABLE IF NOT EXISTS dim_absence_type (absence_type_key INTEGER PRIMARY KEY, absence_type TEXT);",
+        "CREATE TABLE IF NOT EXISTS dim_period (period_key INTEGER PRIMARY KEY, period TEXT);",
+        "CREATE TABLE IF NOT EXISTS fact_monthly_workforce_snapshot (date_key INTEGER, person_key INTEGER, contract_key INTEGER, age_band_key INTEGER, seniority_key INTEGER, gender_key INTEGER, region_key INTEGER, department_key INTEGER, category_key INTEGER, postal_code_key INTEGER, headcount_flag INTEGER);",
+        "CREATE TABLE IF NOT EXISTS fact_monthly_contract_movement (date_key INTEGER, person_key INTEGER, contract_key INTEGER, in_count INTEGER, out_count INTEGER);",
+        "CREATE TABLE IF NOT EXISTS fact_monthly_salary_cost (date_key INTEGER, person_key INTEGER, contract_key INTEGER, age_band_key INTEGER, seniority_key INTEGER, gender_key INTEGER, region_key INTEGER, salary_cost NUMERIC);",
+        "CREATE TABLE IF NOT EXISTS fact_monthly_absence (date_key INTEGER, person_key INTEGER, age_band_key INTEGER, region_key INTEGER, postal_code_key INTEGER, absence_type_key INTEGER, period_key INTEGER, absence_days NUMERIC);",
+        "CREATE TABLE IF NOT EXISTS fact_bradford_index (person_key INTEGER, bradford_index NUMERIC);"
+      ]
+    }
+  },
+  {
+    "task_id": "10",
+    "dependent_task_ids": ["9"],
+    "instruction": "Create dbt transformation models for the date dimension from the staged HR source data and load the resulting dimension into Supabase.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "model_name": "dim_date",
+      "db_path": "workspace/dwh.duckdb",
+      "target_connection_string": "SUPABASE_POSTGRES_CONNECTION_STRING"
+    }
+  },
+  {
+    "task_id": "11",
+    "dependent_task_ids": ["9"],
+    "instruction": "Create dbt transformation models for the person dimension from the staged HR source data and load the resulting dimension into Supabase.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "model_name": "dim_person",
+      "db_path": "workspace/dwh.duckdb",
+      "target_connection_string": "SUPABASE_POSTGRES_CONNECTION_STRING"
+    }
+  },
+  {
+    "task_id": "12",
+    "dependent_task_ids": ["9"],
+    "instruction": "Create dbt transformation models for the contract dimension from the staged HR source data and load the resulting dimension into Supabase.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "model_name": "dim_contract",
+      "db_path": "workspace/dwh.duckdb",
+      "target_connection_string": "SUPABASE_POSTGRES_CONNECTION_STRING"
+    }
+  },
+  {
+    "task_id": "13",
+    "dependent_task_ids": ["9"],
+    "instruction": "Create dbt transformation models for the age band dimension from the staged HR source data and load the resulting dimension into Supabase.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "model_name": "dim_age_band",
+      "db_path": "workspace/dwh.duckdb",
+      "target_connection_string": "SUPABASE_POSTGRES_CONNECTION_STRING"
+    }
+  },
+  {
+    "task_id": "14",
+    "dependent_task_ids": ["9"],
+    "instruction": "Create dbt transformation models for the seniority dimension from the staged HR source data and load the resulting dimension into Supabase.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "model_name": "dim_seniority",
+      "db_path": "workspace/dwh.duckdb",
+      "target_connection_string": "SUPABASE_POSTGRES_CONNECTION_STRING"
+    }
+  },
+  {
+    "task_id": "15",
+    "dependent_task_ids": ["9"],
+    "instruction": "Create dbt transformation models for the gender dimension from the staged HR source data and load the resulting dimension into Supabase.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "model_name": "dim_gender",
+      "db_path": "workspace/dwh.duckdb",
+      "target_connection_string": "SUPABASE_POSTGRES_CONNECTION_STRING"
+    }
+  },
+  {
+    "task_id": "16",
+    "dependent_task_ids": ["9"],
+    "instruction": "Create dbt transformation models for the region dimension from the staged HR source data and load the resulting dimension into Supabase.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "model_name": "dim_region",
+      "db_path": "workspace/dwh.duckdb",
+      "target_connection_string": "SUPABASE_POSTGRES_CONNECTION_STRING"
+    }
+  },
+  {
+    "task_id": "17",
+    "dependent_task_ids": ["9"],
+    "instruction": "Create dbt transformation models for the department dimension from the staged HR source data and load the resulting dimension into Supabase.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "model_name": "dim_department",
+      "db_path": "workspace/dwh.duckdb",
+      "target_connection_string": "SUPABASE_POSTGRES_CONNECTION_STRING"
+    }
+  },
+  {
+    "task_id": "18",
+    "dependent_task_ids": ["9"],
+    "instruction": "Create dbt transformation models for the category dimension from the staged HR source data and load the resulting dimension into Supabase.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "model_name": "dim_category",
+      "db_path": "workspace/dwh.duckdb",
+      "target_connection_string": "SUPABASE_POSTGRES_CONNECTION_STRING"
+    }
+  },
+  {
+    "task_id": "19",
+    "dependent_task_ids": ["9"],
+    "instruction": "Create dbt transformation models for the postal code dimension from the staged HR source data and load the resulting dimension into Supabase.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "model_name": "dim_postal_code",
+      "db_path": "workspace/dwh.duckdb",
+      "target_connection_string": "SUPABASE_POSTGRES_CONNECTION_STRING"
+    }
+  },
+  {
+    "task_id": "20",
+    "dependent_task_ids": ["9"],
+    "instruction": "Create dbt transformation models for the absence type dimension from the staged HR source data and load the resulting dimension into Supabase.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "model_name": "dim_absence_type",
+      "db_path": "workspace/dwh.duckdb",
+      "target_connection_string": "SUPABASE_POSTGRES_CONNECTION_STRING"
+    }
+  },
+  {
+    "task_id": "21",
+    "dependent_task_ids": ["9"],
+    "instruction": "Create dbt transformation models for the period dimension from the staged HR source data and load the resulting dimension into Supabase.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "model_name": "dim_period",
+      "db_path": "workspace/dwh.duckdb",
+      "target_connection_string": "SUPABASE_POSTGRES_CONNECTION_STRING"
+    }
+  },
+  {
+    "task_id": "22",
+    "dependent_task_ids": ["10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21"],
+    "instruction": "Create dbt transformation models for the monthly workforce snapshot fact and load the resulting fact into Supabase.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "model_name": "fact_monthly_workforce_snapshot",
+      "db_path": "workspace/dwh.duckdb",
+      "target_connection_string": "SUPABASE_POSTGRES_CONNECTION_STRING"
+    }
+  },
+  {
+    "task_id": "23",
+    "dependent_task_ids": ["10", "11", "12"],
+    "instruction": "Create dbt transformation models for the monthly contract movement fact and load the resulting fact into Supabase.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "model_name": "fact_monthly_contract_movement",
+      "db_path": "workspace/dwh.duckdb",
+      "target_connection_string": "SUPABASE_POSTGRES_CONNECTION_STRING"
+    }
+  },
+  {
+    "task_id": "24",
+    "dependent_task_ids": ["10", "11", "12", "13", "14", "15", "16"],
+    "instruction": "Create dbt transformation models for the monthly salary cost fact and load the resulting fact into Supabase.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "model_name": "fact_monthly_salary_cost",
+      "db_path": "workspace/dwh.duckdb",
+      "target_connection_string": "SUPABASE_POSTGRES_CONNECTION_STRING"
+    }
+  },
+  {
+    "task_id": "25",
+    "dependent_task_ids": ["10", "11", "13", "16", "19", "20", "21"],
+    "instruction": "Create dbt transformation models for the monthly absence fact and load the resulting fact into Supabase.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "model_name": "fact_monthly_absence",
+      "db_path": "workspace/dwh.duckdb",
+      "target_connection_string": "SUPABASE_POSTGRES_CONNECTION_STRING"
+    }
+  },
+  {
+    "task_id": "26",
+    "dependent_task_ids": ["11"],
+    "instruction": "Create dbt transformation models for the Bradford Index fact and load the resulting fact into Supabase.",
+    "task_type": "TRANSFORMATION",
+    "tool": "DbtRunner",
+    "tool_args": {
+      "model_name": "fact_bradford_index",
+      "db_path": "workspace/dwh.duckdb",
+      "target_connection_string": "SUPABASE_POSTGRES_CONNECTION_STRING"
+    }
+  }
+]

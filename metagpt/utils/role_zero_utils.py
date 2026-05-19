@@ -120,9 +120,21 @@ async def parse_commands(command_rsp: str, llm, exclusive_tool_commands: list[st
             # repair escape error of code and math
             commands = CodeParser.parse_code(block=None, lang="json", text=command_rsp)
             new_command = repair_escape_error(commands)
-            commands = json.loads(
-                repair_llm_raw_output(output=new_command, req_keys=[None], repair_type=RepairType.JSON)
-            )
+            try:
+                commands = json.loads(
+                    repair_llm_raw_output(output=new_command, req_keys=[None], repair_type=RepairType.JSON)
+                )
+            except json.JSONDecodeError:
+                # All repair attempts exhausted — return a graceful error so the agent
+                # can retry in the next reasoning step rather than crashing the pipeline.
+                # Most common cause: SQL strings with many \" escapes exhaust the repair chain.
+                return (
+                    "Your last response could not be parsed as a JSON command block after multiple repair attempts. "
+                    "Please respond with ONLY a JSON list of commands and no surrounding text, e.g.: "
+                    '[{"command_name": "ToolName.method", "args": {...}}]',
+                    False,
+                    command_rsp,
+                )
     except Exception as e:
         tb = traceback.format_exc()
         print(tb)

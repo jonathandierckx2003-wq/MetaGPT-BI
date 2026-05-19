@@ -7,7 +7,7 @@ from metagpt.actions import UserRequirement
 from metagpt.actions.bi.write_brd import WriteBRD
 from metagpt.logs import logger
 from metagpt.prompts.bi.bi_requirements_analyst import BI_REQUIREMENTS_ANALYST_INSTRUCTION
-from metagpt.roles.di.role_zero import RoleZero
+from metagpt.roles.bi.bi_base_role import BIBaseRole
 from metagpt.schema import Message
 from metagpt.tools.tool_registry import register_tool
 from metagpt.utils.common import any_to_name, any_to_str
@@ -18,7 +18,7 @@ from metagpt.tools.bi.data_source_inspector import DataSourceInspector
 
 
 @register_tool(include_functions=["generate_brd"])
-class BIRequirementsAnalyst(RoleZero):
+class BIRequirementsAnalyst(BIBaseRole):
     """Agent 1: Conducts structured elicitation with the business user and produces the BRD.
 
     Operates in two sequential phases:

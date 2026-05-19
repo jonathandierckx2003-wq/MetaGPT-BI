@@ -16,11 +16,13 @@ class DataSourceInspector:
     what data the client has available before writing the BRD.
     """
 
-    def inspect_csv(self, file_path: str) -> dict[str, Any]:
+    def inspect_csv(self, file_path: str, sep: str | None = None) -> dict[str, Any]:
         """Inspect a CSV file and return its column structure and row count.
 
         Args:
             file_path: Path to the CSV file.
+            sep: CSV delimiter override (e.g. ',' ';' '\\t'). Auto-detected when None.
+                 Use an explicit sep only when auto-detection produces wrong column splits.
 
         Returns:
             Dict with 'file', 'row_count', and 'columns' (list of {name, dtype, sample}).
@@ -39,8 +41,9 @@ class DataSourceInspector:
                 "Please provide the correct relative path (e.g. workspace/data/my_file.csv)."
             }
 
-        df = pd.read_csv(file_path, nrows=5)
-        full_df = pd.read_csv(file_path)
+        _read_kwargs = {"sep": sep} if sep is not None else {"sep": None, "engine": "python"}
+        df = pd.read_csv(file_path, nrows=5, **_read_kwargs)
+        full_df = pd.read_csv(file_path, **_read_kwargs)
 
         columns = []
         for col in full_df.columns:

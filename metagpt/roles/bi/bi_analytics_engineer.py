@@ -11,7 +11,7 @@ from metagpt.actions.bi.write_execution_report import WriteExecutionReport
 from metagpt.actions.bi.write_validation_report import WriteValidationReport
 from metagpt.logs import logger
 from metagpt.prompts.bi.bi_analytics_engineer import BI_ANALYTICS_ENGINEER_INSTRUCTION, CURRENT_STATE
-from metagpt.roles.di.role_zero import RoleZero
+from metagpt.roles.bi.bi_base_role import BIBaseRole
 from metagpt.schema import Message
 from metagpt.tools.bi.airbyte_connector import AirbyteConnector
 from metagpt.tools.bi.dbt_runner import DbtRunner
@@ -23,7 +23,7 @@ from metagpt.utils.common import any_to_name, any_to_str
 
 
 @register_tool(include_functions=["execute_BI_task", "publish_execution_report"])
-class BIAnalyticsEngineer(RoleZero):
+class BIAnalyticsEngineer(BIBaseRole):
     """Agent 4: Executes the DWH Technical Execution Plan task by task against external tools.
 
     Dispatches each task from the execution plan to the correct Tool class based on
@@ -42,7 +42,6 @@ class BIAnalyticsEngineer(RoleZero):
         "Execute tasks strictly in the dependency order defined in the Execution Plan. "
         "Never skip a task or change its type. Use only the tools explicitly assigned to each "
         "task type. For CREDENTIAL_REQUEST tasks, always call RoleZero.ask_human before proceeding. "
-        "Always write and run tests alongside each TRANSFORMATION task."
     )
     instruction: str = BI_ANALYTICS_ENGINEER_INSTRUCTION
     tools: list[str] = ["RoleZero", "Editor", "BIAnalyticsEngineer", "DbtRunner"]
@@ -159,6 +158,21 @@ class BIAnalyticsEngineer(RoleZero):
             self._duckdb_executor = DuckDBExecutor()
         return self._duckdb_executor
 
+    def _resolve_db_path(self, db_path: str) -> str:
+        """Redirect workspace-relative DuckDB paths to the per-run directory (DEV-73).
+
+        Eve always writes "workspace/dwh.duckdb" in the execution plan because she does not
+        know the per-run directory at plan-generation time. At execution time, any relative
+        .duckdb path is redirected to config.workspace.path (set by bi_team._setup_workspace).
+        Absolute paths are returned unchanged so manually specified paths are not affected.
+        """
+        if not db_path:
+            return db_path
+        p = Path(db_path)
+        if not p.is_absolute() and db_path.endswith(".duckdb"):
+            return str(Path(config.workspace.path) / p.name)
+        return db_path
+
     def _update_tool_execution(self):
         # DEV-21: wire own @register_tool methods and all DbtRunner bound methods into dispatch map.
         # DbtRunner methods are wired because the LLM calls DbtRunner.write_model() directly
@@ -246,7 +260,7 @@ class BIAnalyticsEngineer(RoleZero):
 
     def _run_duckdb(self, task_type: str, tool_args: dict) -> str:
         executor = self._get_duckdb_executor()
-        db_path = tool_args.get("db_path", "")
+        db_path = self._resolve_db_path(tool_args.get("db_path", ""))
 
         if task_type == "INSTANTIATION":
             return executor.connect(db_path)
@@ -268,12 +282,31 @@ class BIAnalyticsEngineer(RoleZero):
         return loader.load_file(
             file_path=tool_args.get("file_path", ""),
             target_table=tool_args.get("target_table", ""),
-            db_path=tool_args.get("db_path", ""),
+            db_path=self._resolve_db_path(tool_args.get("db_path", "")),
         )
+
+    @staticmethod
+    def _parse_postgres_url(url: str) -> dict:
+        """Parse a postgresql:// connection URL into keyword args for dbt.configure_profile().
+
+        DEV-85: Eve generates postgres_url / target_connection_string as a single URL rather
+        than individual host/port/user/password/dbname fields. This helper extracts those
+        fields so DbtRunner.configure_profile() can be called without requiring Eve to split
+        the URL manually in the execution plan.
+        """
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        return {
+            "host": parsed.hostname or "",
+            "port": int(parsed.port or 5432),
+            "user": parsed.username or "",
+            "password": parsed.password or "",
+            "dbname": (parsed.path or "/postgres").lstrip("/") or "postgres",
+        }
 
     def _run_dbt(self, task_type: str, tool_args: dict) -> str:
         dbt = self._get_dbt_runner()
-        db_path = tool_args.get("db_path", "")
+        db_path = self._resolve_db_path(tool_args.get("db_path", ""))
         model_name = tool_args.get("model_name", "")
 
         if task_type == "TRANSFORMATION":
@@ -294,16 +327,33 @@ class BIAnalyticsEngineer(RoleZero):
 
             # Configure profile if profiles.yml does not exist yet (decoupled from init so
             # it works whether the LLM or write_model() triggered the project creation).
-            # Use project dir name as profile_name so it matches dbt_project.yml's profile key.
+            # DEV-85: Prefer postgres profile when target_connection_string is provided and
+            # no DuckDB db_path is present — this is the correct path for Scenario C
+            # (CSV → Supabase) where dbt must run against Supabase, not DuckDB.
             profiles_path = dbt._project_dir / "profiles.yml"
             if not profiles_path.exists():
-                abs_db_path = str(Path(db_path).resolve()) if db_path else db_path
-                dbt.configure_profile(
-                    profile_name=dbt._project_dir.name,
-                    target_name="dev",
-                    db_type="duckdb",
-                    db_path=abs_db_path,
+                postgres_url = (
+                    tool_args.get("target_connection_string")
+                    or getattr(self, "_credentials", {}).get("SUPABASE_POSTGRES_CONNECTION_STRING")
+                    or getattr(self, "_credentials", {}).get("SUPABASE_POSTGRES_URI")
                 )
+                if postgres_url and not db_path:
+                    conn_params = self._parse_postgres_url(postgres_url)
+                    dbt.configure_profile(
+                        profile_name=dbt._project_dir.name,
+                        target_name="dev",
+                        db_type="postgres",
+                        schema=tool_args.get("schema", "public"),
+                        **conn_params,
+                    )
+                else:
+                    abs_db_path = str(Path(db_path).resolve()) if db_path else db_path
+                    dbt.configure_profile(
+                        profile_name=dbt._project_dir.name,
+                        target_name="dev",
+                        db_type="duckdb",
+                        db_path=abs_db_path,
+                    )
             run_result = dbt.run_model(model_name)
             test_result = dbt.run_tests(model_name)
             return f"Model '{model_name}': run={run_result} | tests={test_result}"
@@ -314,21 +364,33 @@ class BIAnalyticsEngineer(RoleZero):
             # a postgres profile so TRANSFORMATION tasks run against Supabase instead of DuckDB.
             # The auto-configure guard in the TRANSFORMATION branch checks if profiles.yml already
             # exists and skips DuckDB config — so this must run before the first TRANSFORMATION.
+            # DEV-85: also accept a single postgres_url / target_connection_string in tool_args
+            # so Eve does not need to split the URL into individual host/port/user/password fields.
             if db_type == "postgres":
                 if dbt._project_dir is None:
                     dbt.init_project("bi_dwh")
+                postgres_url = tool_args.get("postgres_url") or tool_args.get("target_connection_string")
+                if postgres_url:
+                    conn_params = self._parse_postgres_url(postgres_url)
+                else:
+                    conn_params = {
+                        "host": tool_args.get("host", ""),
+                        "port": int(tool_args.get("port", 5432)),
+                        "user": tool_args.get("user", ""),
+                        "password": tool_args.get("password", ""),
+                        "dbname": tool_args.get("dbname", "postgres"),
+                    }
                 dbt.configure_profile(
                     profile_name=dbt._project_dir.name,
                     target_name="dev",
                     db_type="postgres",
-                    host=tool_args.get("host", ""),
-                    port=int(tool_args.get("port", 5432)),
-                    user=tool_args.get("user", ""),
-                    password=tool_args.get("password", ""),
-                    dbname=tool_args.get("dbname", "postgres"),
                     schema=tool_args.get("schema", "public"),
+                    **conn_params,
                 )
-                return f"dbt postgres profile configured for host: {tool_args.get('host', '')} (schema: {tool_args.get('schema', 'public')})"
+                return (
+                    f"dbt postgres profile configured for host: {conn_params.get('host', '')} "
+                    f"(schema: {tool_args.get('schema', 'public')})"
+                )
             project_dir = tool_args.get("project_dir", "")
             if project_dir:
                 return dbt.attach_project(project_dir)
@@ -338,11 +400,21 @@ class BIAnalyticsEngineer(RoleZero):
 
     def _run_supabase(self, task_type: str, tool_args: dict) -> str:
         connector = SupabaseConnector()
-        result = connector.connect(
-            url=tool_args.get("url", ""),
-            key=tool_args.get("key", ""),
-            postgres_url=tool_args.get("postgres_url"),
-        )
+        # DEV-78: fall back to _credentials when tool_args lacks explicit url/key/postgres_url.
+        # Eve sometimes generates "connection_string" instead of the three separate fields, or
+        # omits CREDENTIAL_REQUEST tasks so values are only in _credentials from ask_human().
+        creds = getattr(self, "_credentials", {})
+        url = (tool_args.get("url")
+               or creds.get("SUPABASE_PROJECT_URL")
+               or creds.get("SUPABASE_URL", ""))
+        key = (tool_args.get("key")
+               or creds.get("SUPABASE_SERVICE_ROLE_KEY")
+               or creds.get("SUPABASE_API_KEY", ""))
+        postgres_url = (tool_args.get("postgres_url")
+                        or tool_args.get("connection_string")
+                        or creds.get("SUPABASE_POSTGRES_CONNECTION_STRING")
+                        or creds.get("SUPABASE_POSTGRES_URI"))
+        result = connector.connect(url=url, key=key, postgres_url=postgres_url)
         if task_type == "SCHEMA_CREATION":
             ddl = tool_args.get("ddl", "")
             if isinstance(ddl, list):
@@ -392,8 +464,11 @@ class BIAnalyticsEngineer(RoleZero):
         report_path = Path(config.workspace.path) / "docs" / "execution_report.md"
         if not report_path.exists():
             return (
-                "Error: workspace/docs/execution_report.md not found. "
-                "Save the report using Editor.write before calling publish_execution_report()."
+                f"Error: execution report not found at '{report_path}'. "
+                "This means Editor.write used the wrong file path. "
+                "Re-call Editor.write with path='docs/execution_report.md' (no 'workspace/' prefix — "
+                "the editor resolves paths relative to your working directory which is already the run folder). "
+                "Then call publish_execution_report() again. Do NOT call end until this succeeds."
             )
         report_content = report_path.read_text(encoding="utf-8")
         self.publish_message(Message(
