@@ -210,5 +210,8 @@ metagpt/ext/aflow/scripts/optimized
 # Claude Code session history
 .cc-history/
 
+# Thesis LaTeX prompt files (local only)
+ClaudeCode_implementation/prompts/Updated prompts after implementation/
+
 # Local config — credentials must be replaced with placeholders before committing
 # config/config2.yaml
